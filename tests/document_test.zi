@@ -1,0 +1,29 @@
+using Document :: #import "document";
+#import "std/text"
+#import "std/text_buffer"
+failures: s32;
+Check :: (ok: bool, name: string) { if !ok { print("FAIL: %\n",name); failures+=1 } }
+FindText :: (wanted: string) -> s32 {
+    for i: 0..Document.count-1 { if Trim(TextValue(i))==wanted { return i } }; return -1
+}
+Main :: () -> s32 {
+    Load("<!doctype html><title>Fixture</title><style>p { color: #123456; font-size: 20px } .notice {color: #abcdef} #target {color: #fedcba}</style><body><p class='notice' id='target'>A &amp; B</p><p style='color: #123;'>Inline</p><script>bad</p>still bad</script><a href='next.html?x=>'>Next</a><div style='display:none'><p>Hidden</p></div></body>")
+    Check(TextUntilNul(title[:])=="Fixture","document title")
+    target:=FindText("A & B"); Check(target>=0,"text entities")
+    if target>=0 { Check(nodes[target].style.color==0xfedcbaff && nodes[target].style.font==20,"ID specificity and inherited font size") }
+    base: StyleRules; InstallTextStyles(base)
+    if target>=0 { props: TextProps; props.class_name=1000+target; face:=TextFaceFor(props,DefaultTextFace()); Check(face.value.foreground==0xfedcbaff,"CSS reaches Kryon text rendering") }
+    inline:=FindText("Inline"); if inline>=0 { Check(nodes[inline].style.color==0x112233ff,"inline style and short hex") } else { Check(false,"inline text") }
+    Check(FindText("bad")<0 && FindText("still bad")<0,"scripts remain raw and invisible")
+    next:=FindText("Next"); if next>=0 { Check(nodes[nodes[next].parent].href=="next.html?x=>","quoted angle brackets in attributes") }
+    hidden:=FindText("Hidden"); Check(hidden>=0 && nodes[hidden].style.hidden,"hidden subtree")
+    Load("<style>#x {color:red} p {font-size:24px;color:blue}</style><p id=x>Priority</p><pre>  a\n  b</pre><h1>Heading</h1><p>Normal</p>")
+    priority:=FindText("Priority"); Check(priority>=0,"unquoted attributes")
+    if priority>=0 { Check(nodes[priority].style.color==0xff0000ff && nodes[priority].style.font==24,"property-specific cascade") }
+    Check(FindText("a\n  b")>=0,"preformatted whitespace")
+    Check(!truncated && count>0,"second page replaces previous tree")
+    Load("<p><b>Malformed</p><p>Still readable<!--unterminated")
+    Check(FindText("Malformed")>=0 && FindText("Still readable")>=0,"malformed nesting and comments recover")
+    if failures==0 { print("HTML tree, CSS specificity, inheritance, inline styles, raw scripts, entities and malformed input verified\n") }
+    return failures
+}

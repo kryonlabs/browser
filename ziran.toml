@@ -1,0 +1,34 @@
+[package]
+name = "browser"
+tool = "kryon"
+entry = "src/app.zi"
+module_roots = ["src", "tests"]
+bridge_modules = ["app"]
+
+[toolchain]
+git = "https://github.com/ziranlang/ziran.git"
+ref = "master"
+
+[tool.kryon]
+default_profile = "desktop"
+
+[tool.kryon.profiles.desktop]
+backend = "desktop"
+library = "X11"
+
+[install]
+bin = "kryon-browser"
+
+[tool.kryon.install]
+profile = "desktop"
+name = "Browser"
+comment = "Native HTML and CSS browser"
+categories = "Network;WebBrowser;"
+
+[dependencies.kryon]
+git = "https://github.com/kryonlabs/kryon.git"
+ref = "master"
+
+[dependencies.kss]
+git = "https://github.com/kryonlabs/kss.git"
+ref = "master"
