@@ -4,7 +4,7 @@ State :: #import "state";
 Window :: #import "desktop";
 Desktop :: #import "kryon/Desktop";
 ScrollDevice :: #import "kryon/ScrollDevice";
-SystemStyle :: #import "kss/SystemStyle";
+SystemStyle :: #import "css/SystemStyle";
 SystemThemeLinux :: #import "kryon/SystemThemeLinux";
 #import "std/text_buffer"
 #import "std/timer_linux"

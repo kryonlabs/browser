@@ -29,6 +29,6 @@ categories = "Network;WebBrowser;"
 git = "https://github.com/kryonlabs/kryon.git"
 ref = "master"
 
-[dependencies.kss]
-git = "https://github.com/kryonlabs/kss.git"
+[dependencies.css]
+git = "https://github.com/kryonlabs/css.git"
 ref = "master"
