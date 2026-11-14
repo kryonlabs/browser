@@ -1,6 +1,5 @@
 Transport :: #import "transport";
 Document :: #import "document";
-#import "std/json_scan"
 #import "std/text"
 #import "std/text_buffer"
 #import "std/byte_text_linux"
@@ -22,6 +21,7 @@ anchor: s32;
 focused: bool;
 scroll: s32;
 
+// JSON helpers for the desktop host's state reply (desktop.zi).
 Release :: (value: string) { descriptor:=cast(*TextDescriptor)(*value); Free(cast(*void)descriptor.data) }
 Quoted :: (out: *Vec(u8), value: string) {
     BuilderPrint(out,"\"")
@@ -33,31 +33,27 @@ Quoted :: (out: *Vec(u8), value: string) {
 }
 Property :: (out: *Vec(u8), key: string, value: string) { BuilderPrint(out,",\"%\":",key); Quoted(out,value) }
 Set :: (out: []u8, value: string) { Document.Copy(out,value) }
-Navigate :: (target: string, remember: bool=true) {
+// A TYPED address stands alone; a link resolves against the current page.
+Navigate :: (target: string, remember: bool=true, typed: bool=false) {
     if loading || target=="" { return }
     if remember && position>=0 { history_scroll[position]=scroll }
     if remember {
         if position>=63 { for i: 0..cast(s32)62 { history[i]=history[i+1]; history_scroll[i]=history_scroll[i+1] }; position=62 }
         position+=1; history_count=position+1; Set(history[position][:],target); history_scroll[position]=0
     }
-    out: Vec(u8); BuilderPrint(*out,"{\"url\":"); Quoted(*out,target); Property(*out,"base",TextUntilNul(url[:])); BuilderPrint(*out,"}")
-    request:=BuilderFinish(out); loading=Transport.Start(request); Release(request)
+    base: [4097]u8; if !typed { Set(base[:],TextUntilNul(url[:])) }
+    loading=Transport.Start(target,TextUntilNul(base[:]))
     Set(message[:],ifx loading then "Loading…" else Transport.error)
 }
 Back :: (delta: s32) {
     if loading || position+delta<0 || position+delta>=history_count { return }
     history_scroll[position]=scroll; position+=delta; target: [4097]u8; Set(target[:],TextUntilNul(history[position][:])); Navigate(TextUntilNul(target[:]),false)
 }
-Decode :: (key: string, out: []u8) {
-    value:=Transport.Value(); size:=ReadStringText(value,FieldAt(value,0,key),out)
-    if size<0 || size>=cast(s32)out.count { out[0]=0 } else { out[size]=0 }
-}
 Tick :: () {
     if !started { started=true; Navigate("about:start") }
     if !Transport.Poll() { return }; loading=false
     if Transport.error!="" { Set(message[:],Transport.error); return }
-    Decode("error",message[:]); if message[0]!=0 { return }
-    Decode("url",url[:]); Decode("html",html[:]); Set(address[:],TextUntilNul(url[:])); Set(history[position][:],TextUntilNul(url[:]))
+    Set(url[:],Transport.CurrentUrl()); Set(html[:],Transport.Html()); Set(address[:],TextUntilNul(url[:])); Set(history[position][:],TextUntilNul(url[:]))
     Document.Load(TextUntilNul(html[:])); changed=true; scroll=history_scroll[position]; cursor=cast(s32)TextUntilNul(address[:]).count; anchor=cursor
     Set(message[:],ifx Document.truncated then "Page preview limit reached" else TextUntilNul(Document.title[:]))
 }

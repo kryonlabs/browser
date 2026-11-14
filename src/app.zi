@@ -59,7 +59,7 @@ Frame :: (session: Session, viewport: Rectangle) -> s32 {
     result:=AddressField(session,field_bounds,key,modifiers,typed); State.cursor=result.cursor; State.anchor=result.anchor; State.focused=result.focused
     if result.edit.changed { State.Edit(result.edit.start,result.edit.end,result.edit.replacement) }
     Window.Record(20,"Address",field_bounds.x,field_bounds.y,field_bounds.width,field_bounds.height,true)
-    if Action(session,13,ifx State.loading then "Wait" else "Go",.{x+width-62.0,y,62.0,38.0},!State.loading) || (result.committed && !State.loading) { State.Navigate(TextUntilNul(State.address[:])); State.focused=false }
+    if Action(session,13,ifx State.loading then "Wait" else "Go",.{x+width-62.0,y,62.0,38.0},!State.loading) || (result.committed && !State.loading) { State.Navigate(TextUntilNul(State.address[:]),true,true); State.focused=false }
     page: Rectangle=.{viewport.x,viewport.y+60.0,viewport.width,viewport.height-92.0}
     background: BoxProps; background.key=2; background.bounds=page; background.fill=ColorFromPacked(Document.page_color); Box(session,background)
     if Document.count>0 { Paint(session,page) }

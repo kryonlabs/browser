@@ -1,93 +1,312 @@
-// A single asynchronous worker keeps network IO outside the UI frame.
-#import "std/byte_text_linux"
-#import "std/text_buffer"
-libc :: #system_library "libc";
-Open :: (path: *u8, flags: s32, mode: ..any) -> s32 #foreign libc "open";
-Read :: (descriptor: s32, output: *u8, length: u64) -> s64 #foreign libc "read";
-Write :: (descriptor: s32, input: *u8, length: u64) -> s64 #foreign libc "write";
-Close :: (descriptor: s32) -> s32 #foreign libc "close";
-Fork :: () -> s32 #foreign libc "fork";
-Exec :: (file: *u8, arg0: *u8, args: ..any) -> s32 #foreign libc "execlp";
-Exit :: (code: s32) #foreign libc "_exit";
-Wait :: (process: s32, status: *s32, options: s32) -> s32 #foreign libc "waitpid";
-Temporary :: (pattern: *u8) -> *u8 #foreign libc "mkdtemp";
-Unlink :: (path: *u8) -> s32 #foreign libc "unlink";
-Environment :: (name: *u8) -> *u8 #foreign libc "getenv";
-ReadExecutableLink :: (path: *u8, out: *u8, size: u64) -> s64 #foreign libc "readlink";
-Access :: (path: *u8, mode: s32) -> s32 #foreign libc "access";
+// Document IO for navigation, entirely in Ziran. Web pages come from curl
+// (which Ziran's std HTTPS GET also relies on) in an owned process channel
+// that Poll drains without blocking, so a slow site never stalls a frame.
+// Local files and the built-in start page are read directly. Redirects may
+// only reach HTTP(S), documents are capped at 512 KiB, only HTML and text
+// content types load, and invalid UTF-8 becomes U+FFFD.
+Channel :: #import "std/process_channel_linux";
+Files :: #import "std/file";
+Url :: #import "url";
+StartPage :: #import "start_page";
 
-pid: s32;
-request_path: [4096]u8;
-response_path: [4096]u8;
-helper: [4096]u8;
-data: [1048576]u8;
-size: s32;
+LIMIT :: 524288;
+META :: "\n@@kryon-browser-meta@@\n";
+TRAILER_CAPACITY :: 8192;
+PAGE_CAPACITY :: 1048576;
+READS_PER_POLL :: 64;
+URL_BYTES :: 4096;
+
+ERROR_LOAD :: "Could not load this page. Check the address and your connection.";
+ERROR_LIMIT :: "This document exceeds the 512 KiB page limit.";
+ERROR_TYPE :: "This resource is not an HTML or text document.";
+ERROR_REDIRECT :: "A website can only redirect to another web address.";
+ERROR_START :: "Cannot start the page loader (curl).";
+
 error: string;
-initialized: bool;
+loading: bool;
+ready: bool;
+channel: Channel.ProcessChannel;
+received: [LIMIT + TRAILER_CAPACITY]u8;
+received_size: s32;
+request_url: [URL_BYTES]u8;
+request_length: s32;
+final_url: [URL_BYTES]u8;
+final_length: s32;
+path_bytes: [URL_BYTES]u8;
+page: [PAGE_CAPACITY]u8;
+page_length: s32;
 
-Copy :: (out: []u8, value: string) {
-    count := cast(s32)value.count; if count >= cast(s32)out.count { count = cast(s32)out.count - 1 }
-    for i: 0..count - 1 { out[i] = value[i] }; out[count] = 0
+EndsWith :: (value: string, suffix: string) -> bool {
+    if suffix.count > value.count { return false }
+    return value[value.count - suffix.count:value.count] == suffix
 }
 
-Init :: () -> bool {
-    if initialized { return true }
-    folder: [64]u8; Copy(folder[:], "/tmp/kryon-browser-XXXXXX")
-    if Temporary(*folder[0]) == null { error = "Cannot create private request storage"; return false }
-    root := TextUntilNul(folder[:]); prefix := cast(s32)root.count
-    Copy(request_path[:],root); Copy(request_path[prefix:],"/request.json")
-    Copy(response_path[:],root); Copy(response_path[prefix:],"/response.json")
-    name: [64]u8; Copy(name[:], "KRYON_BROWSER_FETCH")
-    override := Environment(*name[0])
-    if override != null { Copy(helper[:], TextFromCString(override)) }
-    else {
-        Copy(name[:], "/proc/self/exe")
-        length := cast(s32)ReadExecutableLink(*name[0], *helper[0], 4000)
-        if length <= 0 { error="Cannot locate the Browser transport"; return false }
-        while length > 0 && helper[length-1] != 47 { length -= 1 }
-        Copy(helper[length:], "fetch.py")
-    }
-    if Access(*helper[0],4) != 0 { error="Browser transport is missing; rebuild or reinstall the app"; return false }
-    initialized = true; return true
+// Appends one escaped byte for a text document shown as <pre>.
+AppendByte :: (out: []u8, at: s32, byte: u8, escape: bool) -> s32 {
+    if at < 0 { return -1 }
+    if escape && byte == 60 { return Url.Append(out, at, "&lt;") }
+    if escape && byte == 62 { return Url.Append(out, at, "&gt;") }
+    if escape && byte == 38 { return Url.Append(out, at, "&amp;") }
+    if at + 1 >= cast(s32)out.count { return -1 }
+    out[at] = byte
+    return at + 1
 }
 
-Start :: (request: string) -> bool {
-    if pid > 0 || !Init() { return false }
-    error=""; size=0; unused Unlink(*response_path[0])
-    descriptor := Open(*request_path[0], 577, cast(u32)384)
-    if descriptor < 0 { error="Cannot write Browser request"; return false }
-    bytes := cast(*TextDescriptor)(*request); written: s64
-    while written < request.count {
-        n := Write(descriptor, *bytes.data[written], cast(u64)(request.count-written))
-        if n <= 0 { break }; written += n
+// Copies BYTES as valid UTF-8, replacing each invalid byte with U+FFFD, and
+// stops at RESERVE bytes before the end of OUT.
+#program_export
+AppendUtf8 :: (out: []u8, at: s32, bytes: []u8, escape: bool, reserve: s32) -> s32 {
+    limited := out[0:cast(s32)out.count - reserve]
+    length := at
+    total := cast(s32)bytes.count
+    index: s32 = 0
+    while index < total && length >= 0 {
+        lead := bytes[index]
+        need: s32 = 0
+        low: u8 = 128
+        high: u8 = 191
+        if lead >= 194 && lead <= 223 { need = 1 }
+        else if lead == 224 { need = 2; low = 160 }
+        else if (lead >= 225 && lead <= 236) || lead == 238 || lead == 239 { need = 2 }
+        else if lead == 237 { need = 2; high = 159 }
+        else if lead == 240 { need = 3; low = 144 }
+        else if lead >= 241 && lead <= 243 { need = 3 }
+        else if lead == 244 { need = 3; high = 143 }
+        valid := lead < 128 || need > 0
+        if need > 0 {
+            if index + need >= total { valid = false }
+            else {
+                for step: 1..need {
+                    next := bytes[index + step]
+                    minimum: u8 = 128
+                    maximum: u8 = 191
+                    if step == 1 { minimum = low; maximum = high }
+                    if next < minimum || next > maximum { valid = false }
+                }
+            }
+        }
+        if !valid {
+            // U+FFFD REPLACEMENT CHARACTER
+            if length + 3 >= cast(s32)limited.count { return length }
+            out[length] = 239
+            out[length + 1] = 191
+            out[length + 2] = 189
+            length += 3
+            index += 1
+            continue
+        }
+        if need == 0 {
+            next_length := AppendByte(limited, length, lead, escape)
+            if next_length < 0 { return length }
+            length = next_length
+            index += 1
+            continue
+        }
+        if length + need + 1 >= cast(s32)limited.count { return length }
+        for step: 0..need {
+            out[length] = bytes[index + step]
+            length += 1
+        }
+        index += need + 1
     }
-    unused Close(descriptor)
-    if written != request.count { error="Cannot write complete Browser request"; return false }
-    pid=Fork()
-    if pid < 0 { pid=0; error="Cannot start Browser transport"; return false }
-    if pid == 0 {
-        command: [16]u8; Copy(command[:],"python3")
-        unused Exec(*command[0], *command[0], *helper[0], *request_path[0], *response_path[0], cast(*u8)null)
-        Exit(127)
+    return length
+}
+
+// Publishes BODY loaded from URL as the page; text files become <pre>.
+Finish :: (body: []u8, url: string) {
+    final_length = Url.Append(final_url[:], 0, url)
+    if final_length < 0 { final_length = 0 }
+    parts := Url.SplitUrl(url)
+    plain := EndsWith(parts.path, ".txt") || EndsWith(parts.path, ".zi") || EndsWith(parts.path, ".css")
+    length: s32 = 0
+    if plain { length = Url.Append(page[:], length, "<pre>") }
+    length = AppendUtf8(page[:], length, body, plain, 16)
+    if plain { length = Url.Append(page[:], length, "</pre>") }
+    if length < 0 { length = 0 }
+    page_length = length
+}
+
+ReadLocal :: (path: string, url: string) {
+    decoded, ok := Url.DecodePath(path, path_bytes[:])
+    if !ok {
+        error = ERROR_LOAD
+        return
     }
+    file := Files.OpenRead(decoded)
+    if !file.valid {
+        error = ERROR_LOAD
+        return
+    }
+    size: s32 = 0
+    while size <= LIMIT {
+        count := Files.ReadAt(file, received[size:LIMIT + 1], cast(s64)size)
+        if count <= 0 { break }
+        size += cast(s32)count
+    }
+    unused Files.CloseFile(file)
+    if size > LIMIT {
+        error = ERROR_LIMIT
+        return
+    }
+    Finish(received[0:size], url)
+}
+
+// The media type before any parameters, lower-cased, or false when it is
+// neither HTML nor text. A missing type counts as text, as HTTP clients do.
+#program_export
+AcceptedType :: (value: string) -> bool {
+    end: s32 = 0
+    while end < cast(s32)value.count && value[end] != 59 { end += 1 }
+    start: s32 = 0
+    while start < end && value[start] == 32 { start += 1 }
+    while end > start && value[end - 1] == 32 { end -= 1 }
+    media: [64]u8
+    length := Url.AppendLower(media[:], 0, value[start:end])
+    if length < 0 { return false }
+    kind := TextView(media[0:length])
+    return kind == "" || kind == "text/html" || kind == "text/plain" || kind == "application/xhtml+xml"
+}
+
+LastMarker :: (bytes: []u8) -> s32 {
+    marker := META
+    count := cast(s32)marker.count
+    index := cast(s32)bytes.count - count
+    while index >= 0 {
+        matched := true
+        for offset: 0..count - 1 {
+            if bytes[index + offset] != marker[offset] {
+                matched = false
+                break
+            }
+        }
+        if matched { return index }
+        index -= 1
+    }
+    return -1
+}
+
+Interpret :: (code: s32) {
+    marker := LastMarker(received[0:received_size])
+    if code == 63 {
+        error = ERROR_LIMIT
+        return
+    }
+    if code == 1 {
+        error = ERROR_REDIRECT
+        return
+    }
+    if code != 0 || marker < 0 {
+        error = ERROR_LOAD
+        return
+    }
+    if marker > LIMIT {
+        error = ERROR_LIMIT
+        return
+    }
+    meta := TextView(received[marker + cast(s32)META.count:received_size])
+    line_end: s32 = 0
+    while line_end < cast(s32)meta.count && meta[line_end] != 10 { line_end += 1 }
+    effective := meta[0:line_end]
+    type_start := line_end + 1
+    type_end := type_start
+    while type_end < cast(s32)meta.count && meta[type_end] != 10 { type_end += 1 }
+    content_type := ""
+    if type_start <= cast(s32)meta.count { content_type = meta[type_start:type_end] }
+    if !AcceptedType(content_type) {
+        error = ERROR_TYPE
+        return
+    }
+    if effective == "" { effective = TextView(request_url[0:request_length]) }
+    Finish(received[0:marker], effective)
+}
+
+// Starts loading TARGET resolved against BASE (empty for a typed address).
+// False with error set when the address is refused or nothing can start.
+#program_export
+Start :: (target: string, base: string) -> bool {
+    if loading { return false }
+    error = ""
+    ready = false
+    page_length = 0
+    final_length = 0
+    received_size = 0
+    url, problem := Url.Destination(target, base, request_url[:])
+    if problem != "" {
+        // Named constants, so error never views the request buffer.
+        error = Url.ERROR_SCHEME
+        if problem == Url.ERROR_FOREIGN_FILE { error = Url.ERROR_FOREIGN_FILE }
+        if problem == Url.ERROR_HOST { error = Url.ERROR_HOST }
+        if problem == Url.ERROR_LENGTH { error = Url.ERROR_LENGTH }
+        return false
+    }
+    if url == "about:start" {
+        page_length = StartPage.Write(page[:])
+        final_length = Url.Append(final_url[:], 0, "about:start")
+        loading = true
+        ready = true
+        return true
+    }
+    request_length = cast(s32)url.count
+    parts := Url.SplitUrl(url)
+    if parts.scheme == "file" {
+        ReadLocal(parts.path, url)
+        loading = true
+        ready = true
+        return true
+    }
+    arguments: [22]string = .["curl", "--silent", "--location", "--max-redirs", "10",
+        "--proto", "=http,https", "--proto-redir", "=http,https", "--max-time", "15",
+        "--max-filesize", "524288", "--compressed", "--fail", "--user-agent",
+        "KryonBrowser/0.1", "--header", "Accept: text/html,text/plain;q=0.9",
+        "--write-out", "\n@@kryon-browser-meta@@\n%{url_effective}\n%{content_type}\n", ""]
+    arguments[21] = url
+    channel = Channel.StartChannel(arguments[:], false, true)
+    if channel.pid <= 0 {
+        error = ERROR_START
+        return false
+    }
+    loading = true
     return true
 }
 
+// True once the current load finished, successfully or with error set.
+#program_export
 Poll :: () -> bool {
-    if pid <= 0 { return false }
-    status: s32; done := Wait(pid,*status,1)
-    if done == 0 { return false }; pid=0
-    if done < 0 || status != 0 { error="Browser transport stopped unexpectedly. Refresh to retry."; return true }
-    descriptor := Open(*response_path[0],0)
-    if descriptor < 0 { error="Browser returned no response. Refresh to retry."; return true }
-    size=0
-    while size < 1048575 {
-        n := Read(descriptor,*data[size],cast(u64)(1048575-size))
-        if n <= 0 { break }; size += cast(s32)n
+    if !loading { return false }
+    if ready {
+        loading = false
+        ready = false
+        return true
     }
-    extra: u8; remaining := Read(descriptor,*extra,1); unused Close(descriptor)
-    if remaining > 0 { error="Browser response exceeded the preview limit"; size=0 }
-    data[size]=0; unused Unlink(*request_path[0]); unused Unlink(*response_path[0])
+    finished := false
+    reads: s32 = 0
+    while reads < READS_PER_POLL {
+        if received_size >= cast(s32)received.count {
+            unused Channel.CancelChannel(*channel)
+            loading = false
+            error = ERROR_LIMIT
+            return true
+        }
+        count := Channel.ChannelReceive(channel, received[received_size:received.count], 0)
+        if count < 0 { break }
+        if count == 0 {
+            finished = true
+            break
+        }
+        received_size += cast(s32)count
+        reads += 1
+    }
+    if !finished { return false }
+    unused Channel.WaitChannel(*channel, 2000)
+    code := channel.code
+    unused Channel.CloseChannel(*channel, 0)
+    loading = false
+    Interpret(code)
     return true
 }
-Value :: () -> string { return TextFromBytes(data[:size]) }
+
+#program_export
+CurrentUrl :: () -> string { return TextView(final_url[0:final_length]) }
+
+#program_export
+Html :: () -> string { return TextView(page[0:page_length]) }

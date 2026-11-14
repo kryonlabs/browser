@@ -1,0 +1,144 @@
+// Address resolution and document loading without a display. Run through
+// tests/transport_test.py, which serves BROWSER_TEST_ORIGIN and writes local
+// fixtures under BROWSER_TEST_DIR.
+Url :: #import "url";
+Transport :: #import "transport";
+#import "std/byte_text_linux"
+test_libc :: #system_library "libc";
+TestSleep :: (micros: u32) -> s32 #foreign test_libc "usleep";
+TestEnvironment :: (name: *u8) -> *u8 #foreign test_libc "getenv";
+
+EnvironmentText :: (name: string) -> string {
+    bytes: [64]u8
+    if name.count >= 64 { return "" }
+    for index: 0..cast(s32)name.count - 1 { bytes[index] = name[index] }
+    bytes[name.count] = 0
+    value := TestEnvironment(*bytes[0])
+    if value == null { return "" }
+    return TextFromCString(value)
+}
+
+failures: s32;
+resolved: [4096]u8;
+joined: [4096]u8;
+
+Check :: (ok: bool, name: string) { if !ok { print("FAIL: %\n", name); failures += 1 } }
+
+Resolves :: (value: string, base: string, expected: string) {
+    url, error := Url.Destination(value, base, resolved[:])
+    if error != "" || url != expected { print("  got '%' error '%'\n", url, error) }
+    Check(error == "" && url == expected, expected)
+}
+
+Refused :: (value: string, base: string, expected_error: string) {
+    url, error := Url.Destination(value, base, resolved[:])
+    Check(error != "" && (expected_error == "" || error == expected_error), value)
+}
+
+Join :: (left: string, right: string) -> string {
+    length := Url.Append(joined[:], 0, left)
+    length = Url.Append(joined[:], length, right)
+    if length < 0 { return "" }
+    return TextView(joined[0:length])
+}
+
+// Loads TARGET and waits for the result; false when it never finishes.
+Load :: (target: string, base: string) -> bool {
+    if !Transport.Start(target, base) { return true }
+    for attempt: 0..400 {
+        if Transport.Poll() { return true }
+        unused TestSleep(50000)
+    }
+    return false
+}
+
+Contains :: (value: string, wanted: string) -> bool {
+    if wanted.count > value.count { return false }
+    last := cast(s32)(value.count - wanted.count)
+    for index: 0..last {
+        if value[index:index + cast(s32)wanted.count] == wanted { return true }
+    }
+    return false
+}
+
+Main :: () -> s32 {
+    Resolves("../next.html", "https://example.com/a/index.html", "https://example.com/next.html")
+    Resolves("example.com", "", "https://example.com")
+    Resolves("next.html?x=1#y", "http://host/p/q", "http://host/p/next.html?x=1#y")
+    Resolves("//cdn.example/x", "https://a/b", "https://cdn.example/x")
+    Resolves("?q", "https://a/b/c?d#e", "https://a/b/c?q")
+    Resolves("#f", "https://a/b?c", "https://a/b?c#f")
+    Resolves("/x/./y/../z", "https://a/b", "https://a/x/z")
+    Resolves("child/", "https://a", "https://a/child/")
+    Resolves("HTTPS://Example.com/Path", "", "https://Example.com/Path")
+    Resolves("about:start", "", "about:start")
+    Refused("javascript:alert(1)", "", Url.ERROR_SCHEME)
+    Refused("ftp://example.com", "", Url.ERROR_SCHEME)
+    Refused("https://name:password@example.com", "", Url.ERROR_SCHEME)
+    Refused("file://foreign/tmp/page", "", Url.ERROR_FOREIGN_FILE)
+    Refused("https:///path", "", Url.ERROR_HOST)
+    Refused("next.html", "about:start", "")
+
+    Check(Transport.AcceptedType("text/html; charset=utf-8"), "HTML content type")
+    Check(Transport.AcceptedType("Application/XHTML+XML"), "XHTML content type")
+    Check(Transport.AcceptedType(""), "missing content type counts as text")
+    Check(!Transport.AcceptedType("image/png"), "binary content type refused")
+    invalid: [4]u8 = .[65, 255, 60, 66]
+    cleaned: [32]u8
+    length := Transport.AppendUtf8(cleaned[:], 0, invalid[:], true, 0)
+    Check(length == 9 && cleaned[0] == 65 && cleaned[1] == 239 && cleaned[2] == 191 &&
+        cleaned[3] == 189 && TextView(cleaned[4:9]) == "&lt;B", "invalid UTF-8 and escaping")
+
+    Check(Load("about:start", "") && Transport.error == "" && Contains(Transport.Html(), "<h1>"),
+        "built-in start page")
+
+    directory := EnvironmentText("BROWSER_TEST_DIR")
+    origin := EnvironmentText("BROWSER_TEST_ORIGIN")
+    if directory == "" || origin == "" {
+        print("FAIL: run through tests/transport_test.py\n")
+        return failures + 1
+    }
+    page_url: [4096]u8
+    page_length := Url.Append(page_url[:], 0, Join(Join("file://", directory), "/local%20page.html"))
+    page := TextView(page_url[0:page_length])
+    Check(Load(page, "") && Transport.error == "" && Transport.Html() == "<h1>Local HTML</h1>",
+        "local file with an encoded space")
+    big_url: [4096]u8
+    big_length := Url.Append(big_url[:], 0, Join(Join("file://", directory), "/big.html"))
+    Check(Load(TextView(big_url[0:big_length]), "") && Transport.error == Transport.ERROR_LIMIT,
+        "local file over the page limit")
+    notes_url: [4096]u8
+    notes_length := Url.Append(notes_url[:], 0, Join(Join("file://", directory), "/notes.txt"))
+    Check(Load(TextView(notes_url[0:notes_length]), "") && Transport.Html() == "<pre>a &lt;b&gt; &amp; c</pre>",
+        "text file shown as escaped preformatted text")
+
+    redirect: [4096]u8
+    redirect_length := Url.Append(redirect[:], 0, Join(origin, "/redirect"))
+    Check(Load(TextView(redirect[0:redirect_length]), "") && Transport.error == "" &&
+        Contains(Transport.Html(), "HTTP document"), "HTTP redirect loads the target document")
+    Check(Transport.CurrentUrl() == Join(origin, "/pages/index.html"), "final URL after redirect")
+    current: [4096]u8
+    current_length := Url.Append(current[:], 0, Transport.CurrentUrl())
+    Resolves("next.html", TextView(current[0:current_length]), Join(origin, "/pages/next.html"))
+    image: [4096]u8
+    image_length := Url.Append(image[:], 0, Join(origin, "/image"))
+    Check(Load(TextView(image[0:image_length]), "") && Transport.error == Transport.ERROR_TYPE,
+        "binary documents refused")
+    to_file: [4096]u8
+    to_file_length := Url.Append(to_file[:], 0, Join(origin, "/to-file"))
+    Check(Load(TextView(to_file[0:to_file_length]), "") && Transport.error == Transport.ERROR_REDIRECT,
+        "a website cannot redirect to a local file")
+    missing: [4096]u8
+    missing_length := Url.Append(missing[:], 0, Join(origin, "/missing"))
+    Check(Load(TextView(missing[0:missing_length]), "") && Transport.error == Transport.ERROR_LOAD,
+        "HTTP errors report a load failure")
+    big_web: [4096]u8
+    big_web_length := Url.Append(big_web[:], 0, Join(origin, "/big"))
+    Check(Load(TextView(big_web[0:big_web_length]), "") && Transport.error == Transport.ERROR_LIMIT,
+        "web document over the page limit")
+
+    if failures == 0 {
+        print("URL resolution, start page, local files, HTTP redirects, type and size limits verified\n")
+    }
+    return failures
+}

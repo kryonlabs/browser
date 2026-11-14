@@ -7,8 +7,9 @@ independently from the desktop. No Chromium or WebKit engine renders pages.
 
 Enter an HTTP(S) address or local `file:///` URL. Links navigate within the app.
 Back and Next restore history and scroll positions. Pages wrap to the window
-and scroll independently. Ctrl+L selects the address. Fetching runs outside the
-UI frame in a Python IO worker; parsing and rendering stay in Ziran.
+and scroll independently. Ctrl+L selects the address. Pages load outside the
+UI frame: `src/transport.zi` streams curl through Ziran's process channel
+and `src/url.zi` resolves links, so the whole browser is Ziran plus curl.
 
 The initial engine supports headings, paragraphs, lists, links, preformatted
 text, image descriptions and malformed HTML recovery. Embedded/inline CSS
@@ -23,7 +24,8 @@ cookies and authentication remain future work. Limits are 512 KiB of input and
 
 ## Build and verify
 
-Install Ziran, SDL2, Cairo, FreeType, X11 and Python 3. Dependencies and compiler
+Install Ziran, SDL2, Cairo, FreeType, X11 and curl; Python 3 only serves test
+fixtures. Dependencies and compiler
 are pinned in `ziran.lock`; local development uses ignored package overrides.
 
 ```sh

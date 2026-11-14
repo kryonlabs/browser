@@ -1,0 +1,268 @@
+// Navigation addresses, resolved the way a browser resolves a link: an RFC
+// 3986 reference against the current page. Only http, https and local file
+// URLs without credentials load; "about:start" names the built-in page.
+
+URL_CAPACITY :: 4096;
+MAX_SEGMENTS :: 512;
+
+ERROR_SCHEME :: "Enter an HTTP(S) address or a local file URL.";
+ERROR_FOREIGN_FILE :: "Only local file URLs are supported.";
+ERROR_HOST :: "Enter a complete website address.";
+ERROR_LENGTH :: "This address is too long.";
+
+UrlParts :: struct {
+    scheme: string
+    has_authority: bool
+    authority: string
+    path: string
+    has_query: bool
+    query: string
+    has_fragment: bool
+    fragment: string
+}
+
+IsAlpha :: (byte: u8) -> bool {
+    return (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122)
+}
+
+IsSchemeByte :: (byte: u8) -> bool {
+    return IsAlpha(byte) || (byte >= 48 && byte <= 57) || byte == 43 || byte == 45 || byte == 46
+}
+
+// Splits scheme, authority, path, query and fragment without decoding them.
+#program_export
+SplitUrl :: (value: string) -> UrlParts {
+    parts: UrlParts
+    total := cast(s32)value.count
+    cursor: s32 = 0
+    if total > 0 && IsAlpha(value[0]) {
+        index: s32 = 1
+        while index < total && IsSchemeByte(value[index]) { index += 1 }
+        if index < total && value[index] == 58 {
+            parts.scheme = value[0:index]
+            cursor = index + 1
+        }
+    }
+    if cursor + 1 < total && value[cursor] == 47 && value[cursor + 1] == 47 {
+        start := cursor + 2
+        end := start
+        while end < total && value[end] != 47 && value[end] != 63 && value[end] != 35 { end += 1 }
+        parts.has_authority = true
+        parts.authority = value[start:end]
+        cursor = end
+    }
+    path_end := cursor
+    while path_end < total && value[path_end] != 63 && value[path_end] != 35 { path_end += 1 }
+    parts.path = value[cursor:path_end]
+    cursor = path_end
+    if cursor < total && value[cursor] == 63 {
+        end := cursor + 1
+        while end < total && value[end] != 35 { end += 1 }
+        parts.has_query = true
+        parts.query = value[cursor + 1:end]
+        cursor = end
+    }
+    if cursor < total && value[cursor] == 35 {
+        parts.has_fragment = true
+        parts.fragment = value[cursor + 1:total]
+    }
+    return parts
+}
+
+// Appends PIECE and returns the new length, or -1 once OUT is full; a
+// negative length stays negative so callers check once at the end.
+Append :: (out: []u8, at: s32, piece: string) -> s32 {
+    if at < 0 { return -1 }
+    if at + cast(s32)piece.count >= cast(s32)out.count { return -1 }
+    index := at
+    for byte: piece {
+        out[index] = byte
+        index += 1
+    }
+    return index
+}
+
+AppendLower :: (out: []u8, at: s32, piece: string) -> s32 {
+    if at < 0 { return -1 }
+    if at + cast(s32)piece.count >= cast(s32)out.count { return -1 }
+    index := at
+    for byte: piece {
+        value := byte
+        if value >= 65 && value <= 90 { value += 32 }
+        out[index] = value
+        index += 1
+    }
+    return index
+}
+
+// RFC 3986 remove_dot_segments: "." and ".." never reach the request.
+AppendWithoutDots :: (out: []u8, at: s32, path: string) -> s32 {
+    total := cast(s32)path.count
+    starts: [MAX_SEGMENTS]s32
+    ends: [MAX_SEGMENTS]s32
+    count: s32 = 0
+    absolute := total > 0 && path[0] == 47
+    index: s32 = 0
+    if absolute { index = 1 }
+    trailing := false
+    while index <= total {
+        end := index
+        while end < total && path[end] != 47 { end += 1 }
+        segment := path[index:end]
+        if segment == "." {
+            trailing = true
+        } else if segment == ".." {
+            if count > 0 { count -= 1 }
+            trailing = true
+        } else {
+            if count >= MAX_SEGMENTS { return -1 }
+            starts[count] = index
+            ends[count] = end
+            count += 1
+            trailing = false
+        }
+        index = end + 1
+    }
+    length := at
+    if absolute { length = Append(out, length, "/") }
+    if count > 0 {
+        for segment: 0..count - 1 {
+            if segment > 0 { length = Append(out, length, "/") }
+            length = Append(out, length, path[starts[segment]:ends[segment]])
+        }
+        if trailing { length = Append(out, length, "/") }
+    }
+    return length
+}
+
+AppendTail :: (out: []u8, at: s32, has_query: bool, query: string, has_fragment: bool,
+    fragment: string) -> s32 {
+    length := at
+    if has_query {
+        length = Append(out, length, "?")
+        length = Append(out, length, query)
+    }
+    if has_fragment {
+        length = Append(out, length, "#")
+        length = Append(out, length, fragment)
+    }
+    return length
+}
+
+// Resolves REFERENCE against BASE (RFC 3986 section 5.2.2) into OUT and
+// returns its length, or -1 when it does not fit.
+#program_export
+ResolveReference :: (reference: string, base: string, out: []u8) -> s32 {
+    r := SplitUrl(reference)
+    b := SplitUrl(base)
+    length: s32 = 0
+    if r.scheme != "" || base == "" {
+        if r.scheme != "" {
+            length = AppendLower(out, length, r.scheme)
+            length = Append(out, length, ":")
+        }
+        if r.has_authority {
+            length = Append(out, length, "//")
+            length = Append(out, length, r.authority)
+        }
+        length = AppendWithoutDots(out, length, r.path)
+        return AppendTail(out, length, r.has_query, r.query, r.has_fragment, r.fragment)
+    }
+    if b.scheme != "" {
+        length = AppendLower(out, length, b.scheme)
+        length = Append(out, length, ":")
+    }
+    if r.has_authority {
+        length = Append(out, length, "//")
+        length = Append(out, length, r.authority)
+        length = AppendWithoutDots(out, length, r.path)
+        return AppendTail(out, length, r.has_query, r.query, r.has_fragment, r.fragment)
+    }
+    if b.has_authority {
+        length = Append(out, length, "//")
+        length = Append(out, length, b.authority)
+    }
+    if r.path == "" {
+        length = Append(out, length, b.path)
+        if r.has_query {
+            return AppendTail(out, length, true, r.query, r.has_fragment, r.fragment)
+        }
+        return AppendTail(out, length, b.has_query, b.query, r.has_fragment, r.fragment)
+    }
+    if r.path[0] == 47 {
+        length = AppendWithoutDots(out, length, r.path)
+    } else {
+        merged: [URL_CAPACITY]u8
+        merged_length: s32 = 0
+        if b.has_authority && b.path == "" {
+            merged_length = Append(merged[:], 0, "/")
+        } else {
+            slash := cast(s32)b.path.count - 1
+            while slash >= 0 && b.path[slash] != 47 { slash -= 1 }
+            if slash >= 0 { merged_length = Append(merged[:], 0, b.path[0:slash + 1]) }
+        }
+        merged_length = Append(merged[:], merged_length, r.path)
+        if merged_length < 0 { return -1 }
+        length = AppendWithoutDots(out, length, TextView(merged[0:merged_length]))
+    }
+    return AppendTail(out, length, r.has_query, r.query, r.has_fragment, r.fragment)
+}
+
+// The address to load for VALUE on the page at BASE, written into OUT. A
+// typed address passes an empty BASE; without a scheme it means https.
+#program_export
+Destination :: (value: string, base: string, out: []u8) -> (url: string, error: string) {
+    if value == "about:start" { return "about:start", "" }
+    has_colon := false
+    for byte: value { if byte == 58 { has_colon = true } }
+    source := value
+    prefixed: [URL_CAPACITY]u8
+    if !has_colon && base == "" {
+        prefixed_length := Append(prefixed[:], 0, "https://")
+        prefixed_length = Append(prefixed[:], prefixed_length, value)
+        if prefixed_length < 0 { return "", ERROR_LENGTH }
+        source = TextView(prefixed[0:prefixed_length])
+    }
+    length := ResolveReference(source, base, out)
+    if length < 0 { return "", ERROR_LENGTH }
+    url := TextView(out[0:length])
+    parts := SplitUrl(url)
+    web := parts.scheme == "http" || parts.scheme == "https"
+    if !web && parts.scheme != "file" { return "", ERROR_SCHEME }
+    for byte: parts.authority { if byte == 64 { return "", ERROR_SCHEME } }
+    if parts.scheme == "file" && parts.authority != "" && parts.authority != "localhost" {
+        return "", ERROR_FOREIGN_FILE
+    }
+    if web && parts.authority == "" { return "", ERROR_HOST }
+    return url, ""
+}
+
+HexValue :: (byte: u8) -> s32 {
+    if byte >= 48 && byte <= 57 { return cast(s32)(byte - 48) }
+    if byte >= 97 && byte <= 102 { return cast(s32)(byte - 87) }
+    if byte >= 65 && byte <= 70 { return cast(s32)(byte - 55) }
+    return -1
+}
+
+// Percent-decodes a file URL path into OUT; false for an encoded NUL or a
+// path that does not fit.
+#program_export
+DecodePath :: (path: string, out: []u8) -> (value: string, ok: bool) {
+    total := cast(s32)path.count
+    length: s32 = 0
+    index: s32 = 0
+    while index < total {
+        if length >= cast(s32)out.count - 1 { return "", false }
+        byte := path[index]
+        if byte == 37 && index + 2 < total && HexValue(path[index + 1]) >= 0 &&
+           HexValue(path[index + 2]) >= 0 {
+            byte = cast(u8)(HexValue(path[index + 1]) * 16 + HexValue(path[index + 2]))
+            index += 2
+        }
+        if byte == 0 { return "", false }
+        out[length] = byte
+        length += 1
+        index += 1
+    }
+    return TextView(out[0:length]), true
+}
