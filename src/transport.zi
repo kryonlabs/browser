@@ -239,6 +239,7 @@ Start :: (target: string, base: string) -> bool {
         if problem == Url.ERROR_LENGTH { error = Url.ERROR_LENGTH }
         return false
     }
+    request_length = cast(s32)url.count
     if url == "about:start" {
         page_length = StartPage.Write(page[:])
         final_length = Url.Append(final_url[:], 0, "about:start")
@@ -267,6 +268,19 @@ Start :: (target: string, base: string) -> bool {
     }
     loading = true
     return true
+}
+
+// Cancel and reap only the owned loader. No partial response is published.
+#program_export
+Stop :: () -> bool {
+    cancelled:=true
+    if loading && !ready { cancelled=Channel.CancelChannel(*channel) }
+    loading = false
+    ready = false
+    received_size = 0
+    page_length = 0
+    error = ""
+    return cancelled
 }
 
 // True once the current load finished, successfully or with error set.

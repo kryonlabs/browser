@@ -50,6 +50,22 @@ static void discard_exception(BrowserScript *script) {
     JS_FreeValue(script->context, exception);
 }
 
+/* Render the exception only into the local page status, never a console/log.
+   Conversion is still under the page deadline (including hostile toString). */
+static void exception_error(BrowserScript *script, uint8_t *output,
+                            uint64_t capacity) {
+    JSValue exception = JS_GetException(script->context);
+    const char *text = JS_ToCString(script->context, exception);
+    set_error(output, capacity, text ? text : "JavaScript exception");
+    if (output && capacity) {
+        for (uint64_t i = 0; i < capacity && output[i]; i++)
+            if (output[i] < 32 || output[i] == 127) output[i] = ' ';
+    }
+    if (text) JS_FreeCString(script->context, text);
+    else discard_exception(script);
+    JS_FreeValue(script->context, exception);
+}
+
 static JSValue eval_bytes(BrowserScript *script, const uint8_t *source,
                           uint64_t source_size, const char *filename) {
     char *terminated = malloc((size_t)source_size + 1);
@@ -156,12 +172,11 @@ int32_t browser_script_eval(void *handle, const uint8_t *source,
     script->interrupted = 0;
     value = eval_bytes(script, source, source_size, "<inline-script>");
     if (JS_IsException(value)) {
-        discard_exception(script);
+        exception_error(script, error, error_capacity);
         if (script->interrupted) {
             set_error(error, error_capacity, "JavaScript time limit reached");
             return 2;
         }
-        set_error(error, error_capacity, "JavaScript exception");
         return 1;
     }
     JS_FreeValue(script->context, value);

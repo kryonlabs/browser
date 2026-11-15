@@ -46,6 +46,7 @@ height: float32;
 truncated: bool;
 scripts: [ScriptLimit]string;
 script_count: s32;
+scripts_unsupported: s32;
 scripts_run: s32;
 scripts_failed: s32;
 script_limited: bool;
@@ -296,7 +297,7 @@ RunScripts :: () {
 }
 Load :: (html: string) {
     count=0; rule_count=0; truncated=false; title[0]=0; page_color=0xffffffff
-    script_count=0; scripts_run=0; scripts_failed=0; script_limited=false; script_error[0]=0; script_output[0]=0
+    script_count=0; scripts_unsupported=0; scripts_run=0; scripts_failed=0; script_limited=false; script_error[0]=0; script_output[0]=0
     unused Add(-1,"document"); stack: [64]s32; depth: s32=1; stack[0]=0; i: s32=0
     while i<cast(s32)html.count && count<Limit {
         if html[i]!=60 {
@@ -331,6 +332,7 @@ Load :: (html: string) {
             if close<0 { break }
             if Same(tag,"style") { ParseCSS(html[i:close]) }
             if Same(tag,"title") { Copy(title[:],Trim(html[i:close])) }
+            if Same(tag,"script") && !ClassicScript(attributes) { scripts_unsupported+=1 }
             if Same(tag,"script") && ClassicScript(attributes) {
                 if script_count<ScriptLimit { scripts[script_count]=html[i:close]; script_count+=1 }
                 else { script_limited=true }

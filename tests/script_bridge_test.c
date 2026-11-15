@@ -56,8 +56,8 @@ int main(void) {
               "no std, os, process, or require API");
         check(browser_script_eval(script, (const uint8_t *)throws,
                                   strlen(throws), error, sizeof(error)) == 1 &&
-                  strcmp((const char *)error, "JavaScript exception") == 0,
-              "script errors are generic and contained");
+                  strcmp((const char *)error, "Error: page-private secret") == 0,
+              "script error detail is returned to the caller and contained");
         check(browser_script_eval(script, exact_recovery.data,
                                   sizeof(exact_recovery.data), error,
                                   sizeof(error)) == 0,
@@ -99,6 +99,19 @@ int main(void) {
     } else {
         check(0, "create memory-limited runtime");
     }
+
+    script = browser_script_create(
+        (const uint8_t *)bootstrap, strlen(bootstrap), UINT64_C(8388608),
+        UINT64_C(262144), 35, error, sizeof(error));
+    if (script) {
+        static const char hostile[] = "throw {toString(){for(;;){}}}";
+        double started = seconds();
+        check(browser_script_eval(script, (const uint8_t *)hostile,
+                                  strlen(hostile), error, sizeof(error)) == 2 &&
+                  seconds() - started < 0.75,
+              "exception formatting remains inside the page deadline");
+        browser_script_destroy(script);
+    } else check(0, "create exception-formatting runtime");
 
     if (failures == 0)
         puts("QuickJS isolation, exception recovery, deadline and memory limit verified");

@@ -112,6 +112,15 @@ Main :: () -> s32 {
     Check(Load(TextView(notes_url[0:notes_length]), "") && Transport.Html() == "<pre>a &lt;b&gt; &amp; c</pre>",
         "text file shown as escaped preformatted text")
 
+    Check(Transport.Start(Join(origin,"/slow"),""),"start slow transport")
+    unused TestSleep(100000)
+    Check(!Transport.Poll() && Transport.loading,"slow transport remains pending")
+    Check(Transport.Stop(),"cancel and reap owned channel")
+    Check(!Transport.loading && !Transport.Poll(),"Stop reaps curl, closes its socket and cannot publish a stale response")
+    Check(Load("about:start","") && Transport.error=="","navigation after cancellation")
+    Check(Transport.Start(Join(origin,"/slow"),""),"retry cancelled URL")
+    Check(Transport.Stop() && Transport.Stop(),"repeated Stop is safe")
+
     redirect: [4096]u8
     redirect_length := Url.Append(redirect[:], 0, Join(origin, "/redirect"))
     Check(Load(TextView(redirect[0:redirect_length]), "") && Transport.error == "" &&

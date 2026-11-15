@@ -1,4 +1,5 @@
 BoxWidget :: #import "kryon/box";
+TooltipWidget :: #import "kryon/tooltip";
 ButtonWidget :: #import "kryon/button";
 LinkWidget :: #import "kryon/link";
 ScrollWidget :: #import "kryon/scroll";
@@ -23,10 +24,15 @@ SystemThemeLinux :: #import "kryon/SystemThemeLinux";
 #import "std/timer_linux"
 theme_ready: bool;
 base: StyleRules;
+tooltips: [5]TooltipWidget.TooltipState;
 
 Action :: (session: Session, id: s32, label: string, bounds: Rectangle, enabled: bool) -> bool {
     Window.Record(id,label,bounds.x,bounds.y,bounds.width,bounds.height,enabled)
-    props: ButtonWidget.Props; props.key=cast(u64)id; props.id=id; props.bounds=bounds; props.label=label; props.disabled=!enabled
+    props: ButtonWidget.Props; props.key=cast(u64)id; props.id=id; props.bounds=bounds; props.label=label; props.disabled=!enabled; props.icon_only=true
+    if id==10 { props.icon_shape="S2rr:M19 12H5M12 5L5 12L12 19" }
+    if id==11 || id==13 { props.icon_shape="S2rr:M5 12H19M12 5L19 12L12 19" }
+    if id==12 { props.icon_shape="S2rr:M3 10L12 3L21 10V21H15V14H9V21H3Z" }
+    if id==14 { props.icon_shape=ifx State.loading then "S2rr:M6 6L18 18M18 6L6 18" else "S2rr:M20 7V3M20 7H16M20 7C17 2 9 2 5 7C1 12 4 21 12 21C16 21 19 19 21 15" }
     return ButtonWidget.Draw(session,props)==1
 }
 Paint :: (session: Session, viewport: Rectangle) {
@@ -65,18 +71,33 @@ Frame :: (session: Session, viewport: Rectangle) -> s32 {
     if (modifiers & KeyModifierControl)!=0 && key==76 { State.focused=true; State.anchor=0; State.cursor=cast(s32)TextUntilNul(State.address[:]).count }
     chrome: BoxWidget.Props; chrome.key=1; chrome.bounds=viewport; chrome.fill=StyleTokenColor("surface"); unused BoxWidget.Draw(session,chrome)
     x:=viewport.x+12.0; y:=viewport.y+10.0; width:=viewport.width-24.0
-    if Action(session,10,"Back",.{x,y,62.0,38.0},!State.loading && State.position>0) { State.Back(-1) }
-    if Action(session,11,"Next",.{x+68.0,y,62.0,38.0},!State.loading && State.position+1<State.history_count) { State.Back(1) }
-    if Action(session,12,"Home",.{x+136.0,y,62.0,38.0},!State.loading) { State.Navigate("about:start") }
-    field_bounds: Rectangle=.{x+210.0,y,width-280.0,38.0}
+    if Action(session,10,"Back",.{x,y,38.0,38.0},!State.loading && State.position>0) { State.Back(-1) }
+    if Action(session,11,"Next",.{x+44.0,y,38.0,38.0},!State.loading && State.position+1<State.history_count) { State.Back(1) }
+    if Action(session,12,"Home",.{x+88.0,y,38.0,38.0},!State.loading) { State.Navigate("about:start") }
+    if Action(session,14,ifx State.loading then "Stop loading" else "Reload",.{x+132.0,y,38.0,38.0},true) { if State.loading { State.Stop() } else { State.Reload() } }
+    field_bounds: Rectangle=.{x+182.0,y,width-232.0,38.0}
     result:=AddressField(session,field_bounds,key,modifiers,typed); State.cursor=result.cursor; State.anchor=result.anchor; State.focused=result.focused
     if result.edit.changed { State.Edit(result.edit.start,result.edit.end,result.edit.replacement) }
     Window.Record(20,"Address",field_bounds.x,field_bounds.y,field_bounds.width,field_bounds.height,true)
-    if Action(session,13,ifx State.loading then "Wait" else "Go",.{x+width-62.0,y,62.0,38.0},!State.loading) || (result.committed && !State.loading) { State.Navigate(TextUntilNul(State.address[:]),true,true); State.focused=false }
+    if Action(session,13,"Go",.{x+width-38.0,y,38.0,38.0},true) || result.committed { if State.loading { State.Stop() }; State.Navigate(TextUntilNul(State.address[:]),true,true); State.focused=false }
     page: Rectangle=.{viewport.x,viewport.y+60.0,viewport.width,viewport.height-92.0}
     background: BoxWidget.Props; background.key=2; background.bounds=page; background.fill=ColorFromPacked(Document.page_color); unused BoxWidget.Draw(session,background)
     if Document.count>0 { Paint(session,page) }
+    if State.loading {
+        indicator: BoxWidget.Props; indicator.key=4; indicator.bounds=.{viewport.x,viewport.y+56.0,viewport.width,3.0}; indicator.fill=StyleTokenColorOr("accent",ColorFromPacked(0x4c8dffff)); unused BoxWidget.Draw(session,indicator)
+    }
     status: TextWidget.Props; status.key=3; status.bounds=.{x,viewport.y+viewport.height-26.0,width,22.0}; status.text=TextUntilNul(State.message[:]); status.size=13; status.wrap=.TextWrapNone; TextWidget.Draw(session,status)
+    // Draw overlays last so the page cannot cover them.
+    pointer:=Desktop.PollPointer()
+    for i: 0..Window.control_count-1 {
+        id:=Window.control_ids[i]
+        if id<10 || id>14 { continue }
+        bounds:=Window.control_bounds[i]
+        tip: TooltipWidget.Props; tip.key=cast(u64)(5000+id); tip.anchor=.{bounds[0],bounds[1],bounds[2],bounds[3]}; tip.viewport=viewport
+        tip.text=TextUntilNul(Window.control_labels[i][:]); tip.now_ms=MonotonicMilliseconds(); tip.delay_ms=500
+        tip.pointer.over_anchor=pointer.x>=bounds[0] && pointer.x<bounds[0]+bounds[2] && pointer.y>=bounds[1] && pointer.y<bounds[1]+bounds[3]
+        unused TooltipWidget.Draw(session,tip,*tooltips[id-10])
+    }
     return 0
 }
 AddressField :: (session: Session, bounds: Rectangle, key: s32, modifiers: s32, typed: string) -> TextFieldWidget.Result {

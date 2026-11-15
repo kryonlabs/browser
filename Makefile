@@ -43,7 +43,7 @@ test: check $(QUICKJS_ARCHIVE)
 	$(ZIRAN) build --project --root tests --target=c --entry transport_test:Main --exe -o build/transport-test tests/transport_test.zi
 	python3 tests/transport_test.py build/transport-test/transport_test
 window-test: build
-	env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY -u DBUS_SESSION_BUS_ADDRESS -u SESSION_MANAGER YUE_DESKTOP_RECOVERY=0 xvfb-run -a -s '-screen 0 1280x1024x24' env BROWSER_PRIVATE_XVFB=1 python3 tests/window_test.py
+	env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY -u DBUS_SESSION_BUS_ADDRESS -u SESSION_MANAGER HARMONY_DESKTOP_RECOVERY=0 YUE_DESKTOP_RECOVERY=0 xvfb-run -a -s '-screen 0 1280x1024x24' env BROWSER_PRIVATE_XVFB=1 python3 tests/window_test.py
 install: build
 	mkdir -p "$(PREFIX)/bin" "$(PREFIX)/share/applications" "$(PREFIX)/share/icons/hicolor/scalable/apps" "$(PREFIX)/share/licenses/kryon-browser"
 	install -m 755 build/browser-desktop "$(PREFIX)/bin/kryon-browser"

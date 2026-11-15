@@ -20,6 +20,9 @@ cursor: s32;
 anchor: s32;
 focused: bool;
 scroll: s32;
+pending_remember: bool;
+pending_position: s32;
+last_target: [4097]u8;
 
 // JSON helpers for the desktop host's state reply (desktop.zi).
 Release :: (value: string) { descriptor:=cast(*TextDescriptor)(*value); Free(cast(*void)descriptor.data) }
@@ -37,25 +40,44 @@ Set :: (out: []u8, value: string) { Document.Copy(out,value) }
 Navigate :: (target: string, remember: bool=true, typed: bool=false) {
     if loading || target=="" { return }
     if remember && position>=0 { history_scroll[position]=scroll }
-    if remember {
-        if position>=63 { for i: 0..cast(s32)62 { history[i]=history[i+1]; history_scroll[i]=history_scroll[i+1] }; position=62 }
-        position+=1; history_count=position+1; Set(history[position][:],target); history_scroll[position]=0
-    }
+    pending_position=position
+    pending_remember=remember
+    Set(last_target[:],target)
     base: [4097]u8; if !typed { Set(base[:],TextUntilNul(url[:])) }
     loading=Transport.Start(target,TextUntilNul(base[:]))
+    if loading { Set(last_target[:],TextView(Transport.request_url[0:Transport.request_length])) }
     Set(message[:],ifx loading then "Loading…" else Transport.error)
+}
+Stop :: () {
+    unused Transport.Stop(); loading=false; position=pending_position; pending_remember=false; Set(message[:],"Loading stopped")
+}
+Reload :: () {
+    if position>=0 { history_scroll[position]=scroll }
+    target: [4097]u8; Set(target[:],TextUntilNul(last_target[:]))
+    if target[0]==0 { Set(target[:],TextUntilNul(url[:])) }
+    Navigate(TextUntilNul(target[:]),TextUntilNul(target[:])!=TextUntilNul(url[:]),true)
 }
 Back :: (delta: s32) {
     if loading || position+delta<0 || position+delta>=history_count { return }
-    history_scroll[position]=scroll; position+=delta; target: [4097]u8; Set(target[:],TextUntilNul(history[position][:])); Navigate(TextUntilNul(target[:]),false)
+    previous:=position; history_scroll[position]=scroll; position+=delta; target: [4097]u8; Set(target[:],TextUntilNul(history[position][:])); Navigate(TextUntilNul(target[:]),false); pending_position=previous
 }
 Tick :: () {
     if !started { started=true; Navigate("about:start") }
     if !Transport.Poll() { return }; loading=false
-    if Transport.error!="" { Set(message[:],Transport.error); return }
+    if Transport.error!="" { position=pending_position; pending_remember=false; Set(message[:],Transport.error); return }
+    if pending_remember {
+        if position>=63 { for i: 0..cast(s32)62 { history[i]=history[i+1]; history_scroll[i]=history_scroll[i+1] }; position=62 }
+        position+=1; history_count=position+1; history_scroll[position]=0
+    }
+    pending_remember=false
     Set(url[:],Transport.CurrentUrl()); Set(html[:],Transport.Html()); Set(address[:],TextUntilNul(url[:])); Set(history[position][:],TextUntilNul(url[:]))
+    Set(last_target[:],TextUntilNul(url[:]))
     Document.Load(TextUntilNul(html[:])); changed=true; scroll=history_scroll[position]; cursor=cast(s32)TextUntilNul(address[:]).count; anchor=cursor
-    if Document.script_error[0]!=0 { Set(message[:],TextUntilNul(Document.script_error[:])) }
+    if Document.script_error[0]!=0 {
+        out: Vec(u8); BuilderPrint(*out,"JavaScript: % (limited browser APIs)",TextUntilNul(Document.script_error[:]))
+        status:=BuilderFinish(out); Set(message[:],status); Release(status)
+    }
+    else if Document.scripts_unsupported>0 { Set(message[:],"Limited compatibility: external/module scripts are not supported") }
     else { Set(message[:],ifx Document.truncated then "Page preview limit reached" else TextUntilNul(Document.title[:])) }
 }
 Edit :: (start: s32, end: s32, replacement: string) {

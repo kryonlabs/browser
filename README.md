@@ -7,7 +7,11 @@ independently from the desktop. No Chromium or WebKit engine renders pages.
 Classic inline JavaScript runs in a statically linked, pinned QuickJS engine.
 
 Enter an HTTP(S) address or local `file:///` URL. Links navigate within the app.
-Back and Next restore history and scroll positions. Pages wrap to the window
+Back and Next restore history and scroll positions. Toolbar controls use icons
+with accessible names and hover tooltips. Loading shows a status and colored
+bar immediately; Reload becomes Stop (X). Stop cancels and reaps the curl
+loader, discards its partial response, and preserves the displayed page.
+Reload retries the requested URL; entering another address can replace a load. Pages wrap to the window
 and scroll independently. Ctrl+L selects the address. Pages load outside the
 UI frame: `src/transport.zi` streams curl through Ziran's process channel
 and `src/url.zi` resolves links, so the whole browser is Ziran plus curl.
@@ -23,7 +27,9 @@ surface includes `document.getElementById`, `document.querySelector` (the first
 `#id`, `.class`, or tag match), element `textContent`, and `document.title`.
 Each navigation gets a fresh QuickJS runtime with a 16 MiB engine-memory limit,
 a 256 KiB stack limit, and a 100 ms total deadline. Exceptions are contained
-and later inline scripts are still attempted. QuickJS's `std` and `os` modules
+and later inline scripts are still attempted. Bounded exception details appear
+in the local status (not console logs); unsupported external/module script tags
+produce a compatibility notice instead of silently implying full support. QuickJS's `std` and `os` modules
 are not loaded, and pages get no file, process, shell, or network host API. The
 official QuickJS 2026-06-04 source archive is verified against a pinned SHA-256
 before it is built.
@@ -59,3 +65,29 @@ display/session variables and start private Xvfb, then exercise address input,
 HTML/CSS rendering, script mutations and limits, relative links, history,
 scrolling and a narrow window. Screenshots are written under
 `build/screenshots/`.
+
+## X compatibility diagnosis
+
+An anonymous request using this browser's curl options on 2026-11-15 returned
+HTTP 200, 13,517 bytes of HTML from https://x.com/ (below the input limit).
+Its inline bootstrap uses `document.cookie.match`, `document.documentElement`,
+`getElementsByTagName`, element creation, events, `window`, `self`,
+`ReadableStream`, and `performance`; it injects an external module client.
+The native private-Xvfb reproduction ran three inline scripts, with three
+failures and no script-limit hit. Its first exception was
+`TypeError: cannot read property 'match' of undefined`, from
+`document.cookie.match(...)`. The bounded HTML preview stops before all eight
+script tags in this response can be collected. These are missing browser host
+APIs, rather than evidence that JavaScript is
+disabled or that QuickJS cannot parse modern JavaScript. This patch exposes
+the real exceptions instead of the previous generic “JavaScript exception”.
+The snapshot DOM cannot run X's application. Full support requires a live DOM,
+external/module loading, an event loop and events/timers, fetch/streams, storage
+and cookies, additional Web APIs, and substantially richer CSS/layout. No X
+login or interactive compatibility is claimed. Network responses can vary; a
+403 from a different fetch path does not explain this local HTTP 200 response.
+
+Reproduce a bounded anonymous native-window diagnostic with
+`BROWSER_DIAGNOSE_X=1 build-queue -- make window-test`; this writes only URL,
+script counts, limits and exception/status into `build/x-com-diagnosis.json`.
+The test uses private Xvfb and never the owner's running window.

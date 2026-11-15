@@ -6,6 +6,8 @@ from pathlib import Path
 import subprocess
 import tempfile
 import time
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = Path(__file__).resolve().parents[1]
 assert os.environ.get("BROWSER_PRIVATE_XVFB") == "1", "Use make window-test"
@@ -18,20 +20,24 @@ def xdo(*args):
     return subprocess.check_output(["xdotool", *map(str, args)], text=True).strip()
 
 
-def state(url=None):
+def state(url=None, loading=False):
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
         raw = subprocess.check_output(["xprop", "-id", window, "_HARMONY_APP_STATE"], text=True)
         if " = " in raw:
-            value = json.loads(ast.literal_eval(raw.split(" = ", 1)[1].strip()))
-            if not value["loading"] and value["nodes"] > 0 and (url is None or value["url"] == url):
+            decoded = ast.literal_eval(raw.split(" = ", 1)[1].strip())
+            # xprop escapes UTF-8 bytes as octal in its C string.
+            try: decoded = decoded.encode("latin1").decode("utf-8")
+            except UnicodeError: pass
+            value = json.loads(decoded)
+            if value["loading"] == loading and value["nodes"] > 0 and (url is None or value["url"] == url):
                 return value
         time.sleep(.1)
     raise AssertionError("Browser did not load " + str(url))
 
 
-def action(label):
-    control = next(c for c in state()["controls"] if c["label"] == label and c["enabled"])
+def action(label, loading=False):
+    control = next(c for c in state(loading=loading)["controls"] if c["label"] == label and c["enabled"])
     xdo("mousemove", "--window", window, int(control["x"] + control["width"] / 2), int(control["y"] + control["height"] / 2))
     xdo("click", "1")
     time.sleep(.2)
@@ -51,7 +57,40 @@ try:
     xdo("windowsize", window, 1060, 800)
     state("about:start")
     subprocess.run(["import", "-window", window, str(output / "start.png")], check=True)
-    with tempfile.TemporaryDirectory() as folder:
+    if os.environ.get("BROWSER_DIAGNOSE_X"):
+        action("Address"); xdo("key", "ctrl+a"); xdo("type", "--clearmodifiers", "https://x.com"); xdo("key", "Return")
+        observed = state("https://x.com/")
+        # Bounded diagnostics; no page body, cookies or initial-data payload.
+        diagnosis = {key: observed[key] for key in ("url", "scripts", "script_failures", "script_limited", "script_error", "status")}
+        (ROOT / "build/x-com-diagnosis.json").write_text(json.dumps(diagnosis, indent=2))
+        print(json.dumps(diagnosis))
+        action("Home"); state("about:start")
+    class SlowHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == "/slow": time.sleep(3)
+            body=b"<title>Transport recovered</title><h1>Loaded</h1>"
+            self.send_response(200); self.send_header("Content-Length", str(len(body))); self.end_headers()
+            try: self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError): pass
+        def log_message(self, *args): pass
+    server=ThreadingHTTPServer(("127.0.0.1",0), SlowHandler)
+    threading.Thread(target=server.serve_forever,daemon=True).start()
+    try:
+        slow=f"http://127.0.0.1:{server.server_port}/slow"
+        action("Address"); xdo("key", "ctrl+a"); xdo("type", "--clearmodifiers", slow); xdo("key", "Return")
+        pending=state(loading=True)
+        assert pending["status"] == "Loading…"
+        assert any(c["label"] == "Stop loading" and c["enabled"] for c in pending["controls"])
+        subprocess.run(["import", "-window", window, str(output / "loading.png")], check=True)
+        action("Stop loading", loading=True)
+        assert state()["status"] == "Loading stopped"
+        action("Reload")
+        state(loading=True); state(slow)
+        action("Reload"); state(loading=True); state(slow)
+        action("Home"); state("about:start")
+    finally:
+        server.shutdown(); server.server_close()
+    with tempfile.TemporaryDirectory(dir=ROOT / "build") as folder:
         path = Path(folder) / "index.html"
         second = Path(folder) / "next.html"
         loop = Path(folder) / "loop.html"
@@ -94,7 +133,7 @@ try:
         xdo("windowsize", window, 640, 800)
         time.sleep(.5)
         subprocess.run(["import", "-window", window, str(output / "narrow.png")], check=True)
-    print("Native HTML/CSS, bounded QuickJS DOM changes, loop recovery, navigation state, scrolling and narrow window verified")
+    print("Native icon toolbar, loading status, Stop/retry/reload, HTML/CSS, bounded QuickJS DOM changes, loop recovery, history, scrolling and narrow window verified")
 finally:
     process.terminate()
     try:

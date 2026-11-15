@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 
 LIMIT = 524288
 
@@ -25,7 +26,10 @@ class Handler(BaseHTTPRequestHandler):
             pass  # curl stops oversized documents early, as intended
 
     def do_GET(self):
-        if self.path == "/redirect":
+        if self.path == "/slow":
+            time.sleep(3)
+            self.send(200, "text/html", b"<h1>Slow response</h1>")
+        elif self.path == "/redirect":
             self.send(302, "", b"", [("Location", "/pages/index.html")])
         elif self.path == "/pages/index.html":
             self.send(200, "text/html; charset=utf-8", b"<h1>HTTP document</h1><a href='next.html'>Next</a>")
@@ -44,7 +48,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     binary = Path(sys.argv[1]).resolve()
-    with tempfile.TemporaryDirectory(prefix="browser-transport-") as folder:
+    with tempfile.TemporaryDirectory(prefix="browser-transport-", dir=Path("build").resolve()) as folder:
         root = Path(folder)
         (root / "local page.html").write_text("<h1>Local HTML</h1>")
         (root / "big.html").write_bytes(b"x" * (LIMIT + 1))

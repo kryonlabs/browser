@@ -40,6 +40,10 @@ Main :: () -> s32 {
     Check(TextUntilNul(title[:])=="Loop contained" && FindText("Still rendered")>=0 && script_limited,"infinite loop is interrupted without unloading the page")
     Load("<p id='fresh'>Original</p><script>document.getElementById('fresh').textContent=typeof pageValue==='undefined'?'Fresh runtime':'Leaked runtime'</script>")
     Check(FindText("Fresh runtime")>=0 && scripts_failed==0 && !script_limited,"navigation resets JavaScript runtime state")
+    Load("<p>X bootstrap regression</p><script>document.cookie.match(/night_mode/)</script>")
+    Check(scripts_failed==1 && !script_limited && TextUntilNul(script_error[:])!="JavaScript exception","missing browser APIs report the actual exception, not a language or resource-limit failure")
+    Load("<script type='module' src='https://abs.twimg.com/example.js'></script>")
+    Check(scripts_unsupported==1 && scripts_run==0,"unsupported module loading is counted for compatibility reporting")
     if failures==0 { print("HTML, CSS, bounded QuickJS DOM mutation, recovery, limits and navigation reset verified\n") }
     return failures
 }
