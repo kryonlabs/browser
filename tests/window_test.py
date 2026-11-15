@@ -30,7 +30,12 @@ def state(url=None, loading=False):
             try: decoded = decoded.encode("latin1").decode("utf-8")
             except UnicodeError: pass
             value = json.loads(decoded)
-            if value["loading"] == loading and value["nodes"] > 0 and (url is None or value["url"] == url):
+            # Navigation can begin after toolbar submission in this frame.
+            # Wait for its next submitted Stop control before interacting.
+            toolbar_ready = not loading or any(
+                c["label"] == "Stop loading" and c["enabled"]
+                for c in value["controls"])
+            if value["loading"] == loading and toolbar_ready and value["nodes"] > 0 and (url is None or value["url"] == url):
                 return value
         time.sleep(.1)
     raise AssertionError("Browser did not load " + str(url))

@@ -1,7 +1,7 @@
 // The built-in start page, kept in Ziran so the app needs no data files.
 Url :: #import "url";
 
-lines: [21]string = .{
+lines: [22]string = .{
     "<!doctype html><html><head><title>Browser</title>",
     "<style>",
     "body { background: #f4f7fb; color: #263246; padding: 20px; }",
@@ -18,7 +18,8 @@ lines: [21]string = .{
     "<p>Headings, paragraphs, lists, links, preformatted text and image descriptions work here. Text wraps to the window and the page scrolls independently.</p>",
     "<p>Styles can set colors, backgrounds, font sizes, spacing, widths and visibility using element, class, ID and inline selectors.</p>",
     "<h2>A first engine</h2>",
-    "<p>This early browser supports embedded and inline CSS. JavaScript, forms, image decoding, external stylesheets, flexbox and grid are not implemented yet.</p>",
+    "<p>This early browser supports embedded and inline CSS and bounded classic inline JavaScript. Scripts can find elements by ID or simple selectors, change their textContent and set the page title.</p>",
+    "<p>The DOM is a basic snapshot. External and module scripts, events, timers, forms, image decoding, external stylesheets, flexbox and grid are not supported yet. Complex sites may fail; JavaScript errors remain visible.</p>",
     "<a href='https://example.com'>Visit example.com</a>",
     "<p class='quiet'>No Chromium or WebKit rendering engine. Pages load outside the UI frame.</p>",
     "</main></body></html>",
