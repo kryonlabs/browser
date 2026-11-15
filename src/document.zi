@@ -1,8 +1,15 @@
 // A small HTML tree, CSS cascade and block layout. No external page engine.
-using UI :: #import "kryon/Widgets";
+TextWidget :: #import "kryon/text";
+Controls :: #import "kryon/control_props";
+using Geometry :: #import "kryon/geometry";
+using StyleSheet :: #import "kryon/style_sheet";
+Scripting :: #import "script";
+#import "std/byte_text_linux"
+#import "std/json_scan"
 #import "std/text_buffer"
 
 Limit :: 240;
+ScriptLimit :: 32;
 Style :: struct {
     color: u32
     background: u32
@@ -37,6 +44,18 @@ title: [257]u8;
 page_color: u32;
 height: float32;
 truncated: bool;
+scripts: [ScriptLimit]string;
+script_count: s32;
+scripts_run: s32;
+scripts_failed: s32;
+script_limited: bool;
+script_error: [257]u8;
+script_output: [1048576]u8;
+script_title: [257]u8;
+script_texts: [Limit][4097]u8;
+script_sizes: [Limit]s32;
+libc :: #system_library "libc";
+Free :: (memory: *void) #foreign libc "free";
 
 Copy :: (out: []u8, value: string) {
     n:=cast(s32)value.count; if n>=cast(s32)out.count { n=cast(s32)out.count-1 }
@@ -73,6 +92,22 @@ Attribute :: (value: string, wanted: string) -> string {
         if Same(name,wanted) { return value[begin:i] }
         if quote!=0 && i<end { i+=1 }
     }; return ""
+}
+ClassicScript :: (attributes: string) -> bool {
+    if Attribute(attributes,"src")!="" { return false }
+    kind:=Trim(Attribute(attributes,"type"))
+    return kind=="" || Same(kind,"text/javascript") || Same(kind,"application/javascript")
+}
+RawClose :: (html: string, tag: string, start: s32) -> s32 {
+    i:=start
+    while i+2+cast(s32)tag.count<=cast(s32)html.count {
+        if html[i]==60 && html[i+1]==47 && Same(html[i+2:i+2+cast(s32)tag.count],tag) {
+            after:=i+2+cast(s32)tag.count
+            if after==cast(s32)html.count || html[after]==62 || html[after]==32 || html[after]==9 || html[after]==10 || html[after]==13 { return i }
+        }
+        i+=1
+    }
+    return -1
 }
 Add :: (parent: s32, tag: string) -> s32 {
     if count>=Limit { truncated=true; return -1 }
@@ -196,8 +231,72 @@ Resolve :: () {
         if Same(tag,"body") && style.background!=0 { page_color=style.background }
     }
 }
+JavascriptString :: (output: *Vec(u8), value: string) {
+    BuilderPrint(output,"\"")
+    digits:="0123456789abcdef"; i: s32=0
+    while i<cast(s32)value.count {
+        byte:=value[i]
+        if byte==34 { BuilderPrint(output,"\\\"") }
+        else if byte==92 { BuilderPrint(output,"\\\\") }
+        else if byte==10 { BuilderPrint(output,"\\n") }
+        else if byte==13 { BuilderPrint(output,"\\r") }
+        else if byte==9 { BuilderPrint(output,"\\t") }
+        else if byte<32 {
+            BuilderPrint(output,"\\u00")
+            BuilderPrint(output,"%",digits[cast(s32)(byte>>4):cast(s32)(byte>>4)+1])
+            BuilderPrint(output,"%",digits[cast(s32)(byte&15):cast(s32)(byte&15)+1])
+        } else if i+2<cast(s32)value.count && byte==226 && value[i+1]==128 && (value[i+2]==168 || value[i+2]==169) {
+            if value[i+2]==168 { BuilderPrint(output,"\\u2028") } else { BuilderPrint(output,"\\u2029") }; i+=2
+        } else { BuilderPrint(output,"%",value[i:i+1]) }
+        i+=1
+    }
+    BuilderPrint(output,"\"")
+}
+BuildScriptBootstrap :: () -> string {
+    output: Vec(u8); BuilderPrint(*output,"(() => { 'use strict'; const records = [")
+    for i: 0..count-1 {
+        BuilderPrint(*output,"%{tag:",ifx i==0 then "" else ","); JavascriptString(*output,nodes[i].tag)
+        BuilderPrint(*output,",id:"); JavascriptString(*output,nodes[i].id)
+        BuilderPrint(*output,",classes:"); JavascriptString(*output,nodes[i].classes)
+        BuilderPrint(*output,",text:"); JavascriptString(*output,TextValue(i))
+        BuilderPrint(*output,",parent:%}",nodes[i].parent)
+    }
+    BuilderPrint(*output,"]; const StringValue = String; const encode = JSON.stringify.bind(JSON);")
+    BuilderPrint(*output,"const descendant = (node, ancestor) => { let parent = records[node].parent; while (parent >= 0) { if (parent === ancestor) return true; parent = records[parent].parent; } return false; };")
+    BuilderPrint(*output,"const read = index => { let value = records[index].text; for (let i = index + 1; i < records.length; i++) if (descendant(i,index)) value += records[i].text; return value; };")
+    BuilderPrint(*output,"const write = (index,value) => { const text = StringValue(value).slice(0,4096); if (records[index].tag === '#text') { records[index].text = text; return; } let first = -1; for (let i=index+1;i<records.length;i++) if (descendant(i,index) && records[i].tag === '#text') { if (first < 0) first=i; records[i].text=''; } if (first >= 0) records[first].text=text; else records[index].text=text; };")
+    BuilderPrint(*output,"const makeElement=index=>{ const element={id:records[index].id,className:records[index].classes,tagName:records[index].tag.toUpperCase()}; Object.defineProperty(element,'textContent',{get:()=>read(index),set:value=>write(index,value)}); return Object.freeze(element); };")
+    BuilderPrint(*output,"const elements=records.map((_,index)=>makeElement(index)); const byId=id=>{ id=StringValue(id); const index=records.findIndex(node=>node.id===id); return index<0?null:elements[index]; };")
+    BuilderPrint(*output,"const query=selector=>{ selector=StringValue(selector).trim(); if (!selector) return null; let index=-1; if (selector[0]==='#') index=records.findIndex(node=>node.id===selector.slice(1)); else if (selector[0]==='.') index=records.findIndex(node=>node.classes.split(/\\s+/).includes(selector.slice(1))); else { const tag=selector.toLowerCase(); index=records.findIndex(node=>node.tag.toLowerCase()===tag); } return index<0?null:elements[index]; };")
+    BuilderPrint(*output,"let pageTitle="); JavascriptString(*output,TextUntilNul(title[:]))
+    BuilderPrint(*output,"; const documentObject={getElementById:byId,querySelector:query}; Object.defineProperty(documentObject,'title',{get:()=>pageTitle,set:value=>{pageTitle=StringValue(value).slice(0,256);}}); Object.freeze(documentObject); Object.defineProperty(globalThis,'document',{value:documentObject,writable:false,configurable:false}); return () => encode({title:pageTitle,texts:records.map(node=>node.text)}); })();")
+    return BuilderFinish(output)
+}
+ApplyScriptOutput :: (value: string) -> bool {
+    title_at:=FieldAt(value,0,"title"); texts_at:=FieldAt(value,0,"texts")
+    if title_at<0 || texts_at<0 || ArrayCount(value,texts_at)!=count { return false }
+    title_size:=ReadStringText(value,title_at,script_title[:]); if title_size<0 { return false }
+    for i: 0..count-1 {
+        at:=ElementAt(value,texts_at,i); if at<0 { return false }
+        script_sizes[i]=ReadStringText(value,at,script_texts[i][:]); if script_sizes[i]<0 { return false }
+    }
+    Copy(title[:],TextUntilNul(script_title[:]))
+    for i: 0..count-1 { Copy(nodes[i].text[:],TextUntilNul(script_texts[i][:])); nodes[i].size=script_sizes[i] }
+    return true
+}
+Release :: (value: string) { descriptor:=cast(*TextDescriptor)(*value); Free(cast(*void)descriptor.data) }
+RunScripts :: () {
+    if script_count==0 { return }
+    bootstrap:=BuildScriptBootstrap(); result:=Scripting.Run(bootstrap,scripts[:script_count],script_output[:],script_error[:]); Release(bootstrap)
+    scripts_run=result.executed; scripts_failed=result.failed; script_limited=script_limited || result.limited
+    if result.output_ready {
+        if ApplyScriptOutput(TextUntilNul(script_output[:])) { Resolve() }
+        else { scripts_failed+=1; if script_error[0]==0 { Copy(script_error[:],"JavaScript result rejected") } }
+    }
+}
 Load :: (html: string) {
     count=0; rule_count=0; truncated=false; title[0]=0; page_color=0xffffffff
+    script_count=0; scripts_run=0; scripts_failed=0; script_limited=false; script_error[0]=0; script_output[0]=0
     unused Add(-1,"document"); stack: [64]s32; depth: s32=1; stack[0]=0; i: s32=0
     while i<cast(s32)html.count && count<Limit {
         if html[i]!=60 {
@@ -224,18 +323,23 @@ Load :: (html: string) {
         if closing {
             d:=depth-1; while d>=1 { if Same(nodes[stack[d]].tag,tag) { depth=d; break }; d-=1 }; continue
         }
+        attributes:=content[name_end:]
         if Same(tag,"script") || Same(tag,"style") || Same(tag,"title") {
-            close:=Find(html,"</",i)
+            close:=RawClose(html,tag,i)
             // Raw-text elements may contain strings such as </p>.
             while close>=0 && !Starts(html[close+2:],tag) { close=Find(html,"</",close+2) }
             if close<0 { break }
             if Same(tag,"style") { ParseCSS(html[i:close]) }
             if Same(tag,"title") { Copy(title[:],Trim(html[i:close])) }
+            if Same(tag,"script") && ClassicScript(attributes) {
+                if script_count<ScriptLimit { scripts[script_count]=html[i:close]; script_count+=1 }
+                else { script_limited=true }
+            }
             ending:=Find(html,">",close); if ending<0 { break }; i=ending+1; continue
         }
         if Same(tag,"head") { continue }
         node:=Add(stack[depth-1],tag); if node<0 { break }
-        attributes:=content[name_end:]; nodes[node].id=Attribute(attributes,"id"); nodes[node].classes=Attribute(attributes,"class"); nodes[node].href=Attribute(attributes,"href"); nodes[node].inline_style=Attribute(attributes,"style")
+        nodes[node].id=Attribute(attributes,"id"); nodes[node].classes=Attribute(attributes,"class"); nodes[node].href=Attribute(attributes,"href"); nodes[node].inline_style=Attribute(attributes,"style")
         empty:=Same(tag,"br") || Same(tag,"hr") || Same(tag,"img") || Same(tag,"meta") || Same(tag,"link") || Same(tag,"input") || content[content.count-1]==47
         if Same(tag,"img") { alt:=Attribute(attributes,"alt"); if alt!="" { text:=Add(node,"#text"); if text>=0 { DecodeText(text,alt,false) } } }
         if !empty && depth<64 { stack[depth]=node; depth+=1 }
@@ -245,6 +349,7 @@ Load :: (html: string) {
     for n: 1..count-1 { if Same(nodes[n].tag,"body") { has_body=true } }
     if !has_body { nodes[0].tag="body" }
     Resolve()
+    RunScripts()
 }
 TextValue :: (index: s32) -> string { return TextUntilNul(nodes[index].text[:]) }
 LayoutNode :: (index: s32, x: float32, y: float32, available: float32) -> float32 {
@@ -255,8 +360,8 @@ LayoutNode :: (index: s32, x: float32, y: float32, available: float32) -> float3
     left:=x+style.margin; if style.centered { left=x+(available-width)/2.0 }
     top:=y+style.margin; cursor:=top+style.padding
     if nodes[index].size>0 {
-        props: TextProps; props.bounds=.{left,top,width,0.0}; props.text=TextValue(index); props.font=style.font; props.class_name=1000+index
-        prepared:=PrepareText(props,TextFaceFor(props,DefaultTextFace())); cursor=top+prepared.bounds.height+4.0
+        props: TextWidget.Props; props.bounds=.{left,top,width,0.0}; props.text=TextValue(index); props.size=style.font; props.class_name=1000+index
+        prepared:=TextWidget.PrepareText(props,TextWidget.TextFaceFor(props,TextWidget.DefaultTextFace())); cursor=top+prepared.bounds.height+4.0
     } else if Same(nodes[index].tag,"br") { cursor+=cast(float32)style.font }
     else {
         child:=nodes[index].first
@@ -270,7 +375,7 @@ InstallTextStyles :: (base: StyleRules) {
     for i: 1..count-1 {
         if nodes[i].size==0 || active.count>=320 { continue }
         rule: StyleRule; rule.selector=StyleDefaultSelector(); rule.selector.class_name=1000+i; rule.state=StyleStateAny(); rule.layer=10; rule.order=i
-        rule.style.fields=cast(u32)StyleField.StyleForeground | cast(u32)StyleField.StyleFontSize; rule.style.foreground=nodes[i].style.color; rule.style.font_size=cast(float32)nodes[i].style.font
+        rule.style.fields=cast(u32)Controls.StyleField.StyleForeground | cast(u32)Controls.StyleField.StyleFontSize; rule.style.foreground=nodes[i].style.color; rule.style.font_size=cast(float32)nodes[i].style.font
         active.items[active.count]=rule; active.count+=1
     }; unused InstallStyleRules(active)
 }

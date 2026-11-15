@@ -1,4 +1,6 @@
 using Document :: #import "document";
+TextWidget :: #import "kryon/text";
+using StyleSheet :: #import "kryon/style_sheet";
 #import "std/text"
 #import "std/text_buffer"
 failures: s32;
@@ -12,9 +14,10 @@ Main :: () -> s32 {
     target:=FindText("A & B"); Check(target>=0,"text entities")
     if target>=0 { Check(nodes[target].style.color==0xfedcbaff && nodes[target].style.font==20,"ID specificity and inherited font size") }
     base: StyleRules; InstallTextStyles(base)
-    if target>=0 { props: TextProps; props.class_name=1000+target; face:=TextFaceFor(props,DefaultTextFace()); Check(face.value.foreground==0xfedcbaff,"CSS reaches Kryon text rendering") }
+    if target>=0 { props: TextWidget.Props; props.class_name=1000+target; face:=TextWidget.TextFaceFor(props,TextWidget.DefaultTextFace()); Check(face.value.foreground==0xfedcbaff,"CSS reaches Kryon text rendering") }
     inline:=FindText("Inline"); if inline>=0 { Check(nodes[inline].style.color==0x112233ff,"inline style and short hex") } else { Check(false,"inline text") }
     Check(FindText("bad")<0 && FindText("still bad")<0,"scripts remain raw and invisible")
+    Check(scripts_failed==1 && script_error[0]!=0,"invalid script is contained")
     next:=FindText("Next"); if next>=0 { Check(nodes[nodes[next].parent].href=="next.html?x=>","quoted angle brackets in attributes") }
     hidden:=FindText("Hidden"); Check(hidden>=0 && nodes[hidden].style.hidden,"hidden subtree")
     Load("<style>#x {color:red} p {font-size:24px;color:blue}</style><p id=x>Priority</p><pre>  a\n  b</pre><h1>Heading</h1><p>Normal</p>")
@@ -24,6 +27,19 @@ Main :: () -> s32 {
     Check(!truncated && count>0,"second page replaces previous tree")
     Load("<p><b>Malformed</p><p>Still readable<!--unterminated")
     Check(FindText("Malformed")>=0 && FindText("Still readable")>=0,"malformed nesting and comments recover")
-    if failures==0 { print("HTML tree, CSS specificity, inheritance, inline styles, raw scripts, entities and malformed input verified\n") }
+    Load("<title>Before</title><p class='notice' id='target'>Original</p><script>globalThis.pageValue=1;document.getElementById('target').textContent='Changed';document.title='After'</script><script>throw new Error('private page text')</script><script>if(pageValue!==1)throw new Error('lost globals');document.querySelector('.notice').textContent+=' twice'</script>")
+    Check(TextUntilNul(title[:])=="After" && FindText("Changed twice")>=0,"inline scripts mutate text and title in order")
+    Check(scripts_run==3 && scripts_failed==1 && !script_limited,"script exception does not stop later scripts")
+    Load("<p id='external'>Original</p><script src='not-fetched.js'>document.getElementById('external').textContent='Wrong'</script><script type='module'>document.title='Wrong'</script><script>document.querySelector('#external').textContent='Inline only'</script>")
+    Check(FindText("Inline only")>=0 && scripts_run==1,"external and module scripts stay excluded")
+    Load("<p id='raw'>Original</p><script>const markup='</p>';document.getElementById('raw').textContent=markup</script>")
+    Check(FindText("</p>")>=0 && scripts_failed==0,"script strings do not end the raw-text element")
+    Load("<p id='memory'>Original</p><script>new ArrayBuffer(64*1024*1024)</script><script>document.getElementById('memory').textContent='Recovered'</script>")
+    Check(FindText("Recovered")>=0 && scripts_failed>=1,"memory limit preserves the page and later scripts")
+    Load("<title>Loop contained</title><p>Still rendered</p><script>for(;;){}</script>")
+    Check(TextUntilNul(title[:])=="Loop contained" && FindText("Still rendered")>=0 && script_limited,"infinite loop is interrupted without unloading the page")
+    Load("<p id='fresh'>Original</p><script>document.getElementById('fresh').textContent=typeof pageValue==='undefined'?'Fresh runtime':'Leaked runtime'</script>")
+    Check(FindText("Fresh runtime")>=0 && scripts_failed==0 && !script_limited,"navigation resets JavaScript runtime state")
+    if failures==0 { print("HTML, CSS, bounded QuickJS DOM mutation, recovery, limits and navigation reset verified\n") }
     return failures
 }

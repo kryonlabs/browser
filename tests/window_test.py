@@ -54,18 +54,23 @@ try:
     with tempfile.TemporaryDirectory() as folder:
         path = Path(folder) / "index.html"
         second = Path(folder) / "next.html"
-        path.write_text("<title>Fixture page</title><style>body{background:#f4f7fb}main{max-width:760px;margin:12px auto;padding:20px;background:white}h1{color:#2468bc}</style><main><h1>A native HTML page</h1><p>The browser owns this document.</p><a href='next.html'>Next page</a>" + "<p>A paragraph for independent document scrolling.</p>" * 35 + "</main>")
+        loop = Path(folder) / "loop.html"
+        path.write_text("<title>Fixture page</title><style>body{background:#f4f7fb}main{max-width:760px;margin:12px auto;padding:20px;background:white}h1{color:#2468bc}</style><main><h1>A native HTML page</h1><p>The browser owns this document.</p><a id='script-link' href='next.html'>Before script</a>" + "<p>A paragraph for independent document scrolling.</p>" * 35 + "</main><script>globalThis.runs=(globalThis.runs||0)+1;document.getElementById('script-link').textContent='Run '+runs;document.title='Fixture scripted'</script><script>throw new Error('contained')</script><script>document.querySelector('h1').textContent='JavaScript changed this page'</script>")
         second.write_text("<title>Linked page</title><h1>Links stay in Browser</h1><p>Relative file navigation works.</p>")
+        loop.write_text("<title>Loop contained</title><p>The page survives its script.</p><script>for(;;){}</script>")
         action("Address")
         xdo("key", "ctrl+a")
         xdo("type", "--clearmodifiers", path.as_uri())
         xdo("key", "Return")
-        assert state(path.as_uri())["title"] == "Fixture page"
+        scripted = state(path.as_uri())
+        assert scripted["title"] == "Fixture scripted"
+        assert scripted["scripts"] == 3 and scripted["script_failures"] == 1 and not scripted["script_limited"]
+        assert any(control["label"] == "Run 1" for control in scripted["controls"])
         subprocess.run(["import", "-window", window, str(output / "html-css.png")], check=True)
-        action("Next page")
+        action("Run 1")
         state(second.as_uri())
         action("Back")
-        state(path.as_uri())
+        assert any(control["label"] == "Run 1" for control in state(path.as_uri())["controls"]), "Back reused JavaScript globals"
         xdo("mousemove", "--window", window, 700, 600)
         xdo("click", "--repeat", "4", "--delay", "60", "5")
         time.sleep(.5)
@@ -74,10 +79,22 @@ try:
         state(second.as_uri())
         action("Back")
         assert state(path.as_uri())["scroll"] > 0, "Back lost the page position"
+        action("Address")
+        xdo("key", "ctrl+a")
+        xdo("type", "--clearmodifiers", loop.as_uri())
+        xdo("key", "Return")
+        limited = state(loop.as_uri())
+        assert limited["title"] == "Loop contained" and limited["script_limited"] and limited["script_failures"] >= 1
+        action("Address")
+        xdo("key", "ctrl+a")
+        xdo("type", "--clearmodifiers", second.as_uri())
+        xdo("key", "Return")
+        recovered = state(second.as_uri())
+        assert not recovered["script_limited"] and recovered["scripts"] == 0
         xdo("windowsize", window, 640, 800)
         time.sleep(.5)
         subprocess.run(["import", "-window", window, str(output / "narrow.png")], check=True)
-    print("Native HTML/CSS rendering, address input, relative links, Back/Next, independent scrolling and narrow window verified")
+    print("Native HTML/CSS, bounded QuickJS DOM changes, loop recovery, navigation state, scrolling and narrow window verified")
 finally:
     process.terminate()
     try:

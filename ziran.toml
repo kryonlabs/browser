@@ -4,17 +4,18 @@ tool = "kryon"
 entry = "src/app.zi"
 module_roots = ["src", "tests"]
 bridge_modules = ["app"]
+links = ["m", "dl", "pthread"]
 
 [toolchain]
 git = "https://github.com/ziranlang/ziran.git"
 ref = "master"
-
 [tool.kryon]
 default_profile = "desktop"
 
 [tool.kryon.profiles.desktop]
 backend = "desktop"
 library = "X11"
+static_archive = "build/quickjs/libbrowser_script.a"
 
 [install]
 bin = "kryon-browser"
@@ -27,8 +28,4 @@ categories = "Network;WebBrowser;"
 
 [dependencies.kryon]
 git = "https://github.com/kryonlabs/kryon.git"
-ref = "master"
-
-[dependencies.css]
-git = "https://github.com/kryonlabs/css.git"
 ref = "master"

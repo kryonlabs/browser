@@ -1,5 +1,5 @@
 // Inspect and publish only the native window Kryon created for this app.
-Desktop :: #import "kryon/Desktop";
+Desktop :: #import "kryon/desktop_runtime";
 Model :: #import "state";
 Document :: #import "document";
 #import "std/text"
@@ -33,7 +33,7 @@ Publish :: () {
     name: [32]u8; Model.Set(name[:],"_HARMONY_APP_STATE"); atom:=Atom(info.display,*name[0],0)
     out: Vec(u8); BuilderPrint(*out,"{\"interface\":\"harmony.app-state.v1\",\"app\":\"browser\",\"loading\":%",Model.loading)
     Model.Property(*out,"url",TextFromCString(*Model.url[0])); Model.Property(*out,"title",TextFromCString(*Document.title[0]))
-    BuilderPrint(*out,",\"scroll\":%,\"nodes\":%,\"controls\":[",Model.scroll,Document.count)
+    BuilderPrint(*out,",\"scroll\":%,\"nodes\":%,\"scripts\":%,\"script_failures\":%,\"script_limited\":%,\"controls\":[",Model.scroll,Document.count,Document.scripts_run,Document.scripts_failed,Document.script_limited)
     for i: 0..control_count-1 {
         BuilderPrint(*out,"%{\"control\":\"%\",\"role\":1,\"enabled\":%,\"x\":%,\"y\":%,\"width\":%,\"height\":%,\"label\":",ifx i==0 then "" else ",",control_ids[i],control_enabled[i],control_bounds[i][0],control_bounds[i][1],control_bounds[i][2],control_bounds[i][3])
         Model.Quoted(*out,TextFromCString(*control_labels[i][0])); BuilderPrint(*out,"}")

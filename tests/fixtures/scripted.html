@@ -1,0 +1,17 @@
+<!doctype html>
+<title>Resource fixture</title>
+<style>
+body { background: #f4f7fb; color: #263246; }
+main { max-width: 720px; margin: 16px auto; padding: 24px; background: white; }
+</style>
+<main>
+  <h1 id="heading">Before JavaScript</h1>
+  <p class="status">A small scripted native page.</p>
+  <p>QuickJS runs without Chromium or WebKit.</p>
+</main>
+<script>
+const heading = document.getElementById("heading");
+heading.textContent = "QuickJS is active";
+document.querySelector(".status").textContent = "The DOM snapshot changed.";
+document.title = "Resource fixture scripted";
+</script>

@@ -55,7 +55,8 @@ Tick :: () {
     if Transport.error!="" { Set(message[:],Transport.error); return }
     Set(url[:],Transport.CurrentUrl()); Set(html[:],Transport.Html()); Set(address[:],TextUntilNul(url[:])); Set(history[position][:],TextUntilNul(url[:]))
     Document.Load(TextUntilNul(html[:])); changed=true; scroll=history_scroll[position]; cursor=cast(s32)TextUntilNul(address[:]).count; anchor=cursor
-    Set(message[:],ifx Document.truncated then "Page preview limit reached" else TextUntilNul(Document.title[:]))
+    if Document.script_error[0]!=0 { Set(message[:],TextUntilNul(Document.script_error[:])) }
+    else { Set(message[:],ifx Document.truncated then "Page preview limit reached" else TextUntilNul(Document.title[:])) }
 }
 Edit :: (start: s32, end: s32, replacement: string) {
     copied: [4097]u8; Set(copied[:],replacement)

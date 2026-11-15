@@ -1,0 +1,67 @@
+#import "std/byte_text_linux"
+#import "std/text_buffer"
+
+libc :: #system_library "libc";
+CreateNative :: (bootstrap: *u8, bootstrap_size: u64, memory_limit: u64,
+    stack_limit: u64, time_limit_ms: u32, error: *u8,
+    error_capacity: u64) -> *void #foreign libc "browser_script_create";
+EvalNative :: (handle: *void, source: *u8, source_size: u64, error: *u8,
+    error_capacity: u64) -> s32 #foreign libc "browser_script_eval";
+FinishNative :: (handle: *void, output: *u8, output_capacity: u64,
+    error: *u8, error_capacity: u64) -> s32 #foreign libc "browser_script_finish";
+DestroyNative :: (handle: *void) #foreign libc "browser_script_destroy";
+
+Result :: struct {
+    executed: s32
+    failed: s32
+    limited: bool
+    output_ready: bool
+}
+
+Copy :: (output: []u8, value: string) {
+    size := cast(s32)value.count
+    if size >= cast(s32)output.count { size = cast(s32)output.count - 1 }
+    for i: 0..size - 1 { output[i] = value[i] }
+    output[size] = 0
+}
+
+Run :: (bootstrap: string, scripts: []string, output: []u8,
+    error: []u8) -> Result {
+    result: Result
+    output[0] = 0
+    error[0] = 0
+    temporary: [257]u8
+    bootstrap_text := cast(*TextDescriptor)(*bootstrap)
+    handle := CreateNative(bootstrap_text.data, cast(u64)bootstrap.count,
+        cast(u64)16777216, cast(u64)262144, cast(u32)100, *temporary[0],
+        cast(u64)temporary.count)
+    if handle == null {
+        Copy(error,TextUntilNul(temporary[:]))
+        result.failed = 1
+        return result
+    }
+    defer { DestroyNative(handle) }
+    for source: scripts {
+        temporary[0] = 0
+        descriptor := cast(*TextDescriptor)(*source)
+        status := EvalNative(handle,descriptor.data,cast(u64)source.count,*temporary[0],
+            cast(u64)temporary.count)
+        result.executed += 1
+        if status != 0 {
+            result.failed += 1
+            if status == 2 { result.limited = true }
+            if error[0] == 0 { Copy(error,TextUntilNul(temporary[:])) }
+        }
+    }
+    temporary[0] = 0
+    status := FinishNative(handle,*output[0],cast(u64)output.count,
+        *temporary[0],cast(u64)temporary.count)
+    if status == 0 {
+        result.output_ready = true
+    } else {
+        result.failed += 1
+        if status == 2 { result.limited = true }
+        if error[0] == 0 { Copy(error,TextUntilNul(temporary[:])) }
+    }
+    return result
+}
