@@ -18,11 +18,9 @@ State :: #import "state";
 Window :: #import "desktop";
 Desktop :: #import "kryon/desktop_runtime";
 ScrollDevice :: #import "kryon/ScrollDevice";
-SystemTheme :: #import "kryon/SystemTheme";
-SystemThemeLinux :: #import "kryon/SystemThemeLinux";
+SystemThemeHost :: #import "kryon/SystemThemeHostLinux";
 #import "std/text_buffer"
 #import "std/timer_linux"
-theme_ready: bool;
 base: StyleRules;
 tooltips: [5]TooltipWidget.TooltipState;
 
@@ -62,9 +60,8 @@ Paint :: (session: Session, viewport: Rectangle) {
 #program_export
 Frame :: (session: Session, viewport: Rectangle) -> s32 {
     Window.control_count=0; defer { Window.Publish() }
-    if !theme_ready {
-        unused SystemTheme.SystemPaletteInstall(SystemThemeLinux.SystemPaletteRead()); base=ActiveStyleRules(); theme_ready=true
-    }
+    // Embedded in Harmony the chrome follows the host's theme; a page keeps its own colours.
+    if SystemThemeHost.SystemPaletteFollow() { base=ActiveStyleRules(); State.changed=true }
     State.Tick()
     if State.changed { Document.InstallTextStyles(base); State.changed=false }
     key:=KeyboardTake(session); modifiers:=KeyboardModifiers(session); typed_bytes: [256]u8; typed:=TypedTextTake(session,typed_bytes[:])
