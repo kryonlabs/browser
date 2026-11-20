@@ -7,8 +7,8 @@ bridge_modules = ["app"]
 links = ["m", "dl", "pthread"]
 
 [toolchain]
-git = "https://github.com/ziranlang/ziran.git"
-ref = "master"
+git = "https://git.waozi.xyz/ziranlang/ziran.git"
+ref = "c6bf5cbf5dc6782f819580b3db488d223002076e"
 [tool.kryon]
 default_profile = "desktop"
 
@@ -27,5 +27,5 @@ comment = "Native HTML and CSS browser"
 categories = "Network;WebBrowser;"
 
 [dependencies.kryon]
-git = "https://github.com/kryonlabs/kryon.git"
-ref = "master"
+git = "https://git.waozi.xyz/kryonlabs/kryon.git"
+ref = "0a86415bff1bd18dc5587431e634a3e2d6be1351"
