@@ -66,28 +66,18 @@ HTML/CSS rendering, script mutations and limits, relative links, history,
 scrolling and a narrow window. Screenshots are written under
 `build/screenshots/`.
 
-## X compatibility diagnosis
+## X compatibility
 
-An anonymous request using this browser's curl options on 2026-11-15 returned
-HTTP 200, 13,517 bytes of HTML from https://x.com/ (below the input limit).
-Its inline bootstrap uses `document.cookie.match`, `document.documentElement`,
-`getElementsByTagName`, element creation, events, `window`, `self`,
-`ReadableStream`, and `performance`; it injects an external module client.
-The native private-Xvfb reproduction ran three inline scripts, with three
-failures and no script-limit hit. Its first exception was
-`TypeError: cannot read property 'match' of undefined`, from
-`document.cookie.match(...)`. The bounded HTML preview stops before all eight
-script tags in this response can be collected. These are missing browser host
-APIs, rather than evidence that JavaScript is
-disabled or that QuickJS cannot parse modern JavaScript. This patch exposes
-the real exceptions instead of the previous generic “JavaScript exception”.
-The snapshot DOM cannot run X's application. Full support requires a live DOM,
-external/module loading, an event loop and events/timers, fetch/streams, storage
-and cookies, additional Web APIs, and substantially richer CSS/layout. No X
-login or interactive compatibility is claimed. Network responses can vary; a
-403 from a different fetch path does not explain this local HTTP 200 response.
+Modern single-page applications such as x.com do not run in this engine yet:
+their bootstrap needs a live DOM, external and module scripts, an event loop,
+timers, fetch and streams, storage, cookies and further Web APIs, plus richer
+CSS and layout. The bounded HTML preview also stops before every inline script
+of such a page is collected. These are missing browser host APIs, not evidence
+that JavaScript is disabled or that QuickJS cannot parse modern JavaScript; the
+deliberately limited DOM and host APIs are described above
+above. No login or interactive compatibility is claimed.
 
 Reproduce a bounded anonymous native-window diagnostic with
-`BROWSER_DIAGNOSE_X=1 build-queue -- make window-test`; this writes only URL,
-script counts, limits and exception/status into `build/x-com-diagnosis.json`.
-The test uses private Xvfb and never the owner's running window.
+`BROWSER_DIAGNOSE_X=1 make window-test`; it writes URL, script counts, limits
+and exception/status data to `build/x-com-diagnosis.json` using private Xvfb
+and never the owner's running window.
